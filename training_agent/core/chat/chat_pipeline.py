@@ -18,8 +18,7 @@ from api.deps import DBSession, CurrentUser
 from api.schemas.chat import ChatStreamChunk
 from core.config import settings
 from core.exceptions import NotFoundException, ValidationException
-from core.rag.retriever import Retriever
-from core.embedding.client import EmbeddingClient
+from core.chat.rag_flow import RagRetrievalRequest, retrieve_chat_context
 from core.agent.orchestrator import AgentOrchestrator
 from core.agent.request_router import RequestRouter
 from core.agent.executor import AgentStepExecutor
@@ -296,59 +295,21 @@ async def handle_chat(
             retrieval_ms = 0
             timings["embedding_ms"] = 0
             timings["retrieval_ms"] = 0
-            if state.active_kb_id and route_decision.route in {
-                "rag_qa", "content_generation", "ppt_generation",
-                "pdf_generation", "document_summary",
-            }:
-                try:
-                    t0 = time.time()
-                    logger.info(f"[Timing] 开始向量化, query={message[:30]}...")
-                    embedding = EmbeddingClient()
-                    query_vector = await embedding.embed_single(message)
-                    timings["embedding_ms"] = int((time.time() - t0) * 1000)
-                    logger.info(f"[Timing] 向量化完成: {timings['embedding_ms']}ms, dim={len(query_vector)}")
 
-                    t0 = time.time()
-                    retriever = Retriever(db)
-                    retrieved, retrieval_timings = await retriever.similarity_search(
-                        query_vector, str(state.active_kb_id),
-                        top_k=5, threshold=0.2,
-                        query_text=message,
-                        use_rerank=True,
-                        return_timings=True,
-                    )
-                    retrieval_ms = int((time.time() - t0) * 1000)
-                    timings["retrieval_ms"] = retrieval_ms
-                    timings["retrieval_vector_sql_ms"] = retrieval_timings.get("vector_sql_ms", 0)
-                    timings["retrieval_bm25_ms"] = retrieval_timings.get("bm25_ms", 0)
-                    timings["retrieval_rrf_ms"] = retrieval_timings.get("rrf_ms", 0)
-                    timings["retrieval_rerank_ms"] = retrieval_timings.get("rerank_ms", 0)
-                    timings["retrieval_total_ms"] = retrieval_timings.get("retrieval_total_ms", 0)
-                    timings["retrieval_rerank_decision"] = retrieval_timings.get("rerank_decision", "off")
-                    timings["retrieval_rerank_reason"] = retrieval_timings.get("rerank_reason", "")
-                    timings["retrieval_rerank_candidate_k"] = retrieval_timings.get("rerank_candidate_k", 0)
-                    timings["retrieval_rerank_cache_hit"] = retrieval_timings.get("rerank_cache_hit", False)
-                    timings["retrieval_rerank_error"] = retrieval_timings.get("rerank_error", "")
-                    logger.info(
-                        f"[Timing] 混合检索完成: {retrieval_ms}ms, 返回{len(retrieved)}条, "
-                        f"detail={retrieval_timings}"
-                    )
-
-                    for c in retrieved:
-                        state.citations.append({
-                            "chunk_id": c.chunk_id,
-                            "document_title": c.document_title,
-                            "score": c.score,
-                        })
-                        state.chunks_data.append({
-                            "content": c.content,
-                            "source": c.metadata.get("source") or f"知识库-{c.document_title}",
-                            "chunk_type": c.metadata.get("chunk_strategy", "paragraph"),
-                        })
-                    # 同步本地变量,避免后面再回读
-                    chunks_data = state.chunks_data
-                except Exception as e:
-                    logger.warning(f"[Timing] RAG检索失败: {e}, 耗时={(time.time()-t0)*1000:.0f}ms")
+            # === RAG 检索:通过 rag_flow 统一入口 ===
+            rag_result = await retrieve_chat_context(
+                db=db,
+                request=RagRetrievalRequest(
+                    query=message,
+                    active_kb_id=state.active_kb_id,
+                    route=route_decision.route,
+                ),
+            )
+            state.chunks_data.extend(rag_result.chunks_data)
+            state.citations.extend(rag_result.citations)
+            timings.update(rag_result.timings)
+            # 同步本地变量,避免后面再回读
+            chunks_data = state.chunks_data
 
             if state.active_kb_id:
                 logger.info(f"[Timing] kb_id={str(state.active_kb_id)[:8]}..., chunks={len(state.chunks_data)}")
