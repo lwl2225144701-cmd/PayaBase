@@ -216,10 +216,11 @@ def parse_image_document(
     """Parse image documents into retrievable text with Vision LLM."""
     if not settings.index_enable_image_vision:
         raise ValueError("图片解析未启用，请设置 INDEX_ENABLE_IMAGE_VISION=true")
-    if not settings.llm_vision_model:
-        raise ValueError("图片解析需要配置 LLM_VISION_MODEL")
 
-    from core.llm.factory import get_llm_client
+    from core.llm.factory import get_llm_client, is_vision_enabled
+
+    if not is_vision_enabled():
+        raise ValueError("图片解析需要配置 LLM_VISION_MODEL")
     from core.prompts.vision import VISION_PROMPT
 
     mime = f"image/{'jpeg' if file_ext == 'jpg' else file_ext}"

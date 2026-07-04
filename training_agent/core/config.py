@@ -102,7 +102,7 @@ class Settings(BaseSettings):
 
     # Attachment
     max_attachment_size: int = 10 * 1024 * 1024  # 10MB
-    llm_vision_model: str = ""  # fallback to llm_model if empty
+    llm_vision_model: str = ""  # Vision 模型,必须显式配置,不自动复用 llm_model
     llm_vision_api_key: str = ""  # vision model API key (fallback to llm_api_key)
     llm_vision_base_url: str = ""  # vision model base URL (fallback to llm_base_url)
     temp_attachment_prefix: str = "temp_attachments"

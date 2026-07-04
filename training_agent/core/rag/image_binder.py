@@ -113,7 +113,9 @@ class ImageBinder:
 
     def describe_image_with_vision(self, image_bytes: bytes, extension: str = "png") -> str:
         """调用Vision模型识别图片文本，失败则返回空字符串。"""
-        if not settings.index_enable_image_vision or not settings.llm_vision_model:
+        from core.llm.factory import is_vision_enabled
+
+        if not settings.index_enable_image_vision or not is_vision_enabled():
             return ""
 
         try:

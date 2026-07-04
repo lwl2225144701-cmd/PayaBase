@@ -86,7 +86,7 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
             model=s.llm_chat_model or s.llm_model,
             timeout=float(s.llm_chat_timeout or s.llm_default_timeout),
             api_header_name=s.llm_chat_api_header_name,
-            api_header_prefix=s.llm_chat_api_header_prefix or "Bearer ",
+            api_header_prefix=s.llm_chat_api_header_prefix,
         )
 
     if purpose == PURPOSE_VISION:
@@ -111,6 +111,18 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
         model=s.llm_model,
         timeout=float(s.llm_default_timeout),
     )
+
+
+# ===== Vision 可用性判断 =====
+
+def is_vision_enabled() -> bool:
+    """判断 Vision 模型是否已配置(不创建 LLMClient,仅做配置检查)。
+
+    用于业务层在调用 get_llm_client("vision") 之前判断是否跳过 Vision 功能。
+    provider 非法时会 raise ValueError,避免静默错误。
+    """
+    profile = get_llm_profile(PURPOSE_VISION)
+    return bool(profile.model)
 
 
 # ===== 客户端工厂 =====

@@ -26,16 +26,38 @@ logger = logging.getLogger(__name__)
 
 
 def _normalize_provider(provider: Optional[str], base_url: Optional[str], fallback: str) -> str:
-    """统一 provider 命名:openai_compatible -> openai;其他/空 -> 推断或回退。"""
+    """统一 provider 规范化(与 factory.py 行为一致)。
+
+    - openai_compatible → openai
+    - 显式传入未知 provider → raise ValueError(快速失败,不静默兜底)
+    - provider 为空时:base_url 含 ollama → ollama,否则走 fallback
+    - fallback=openai_compatible → openai
+    - fallback 非法 → raise ValueError
+    - fallback 为空 → openai
+    """
     if provider:
         p = provider.strip().lower()
         if p == PROVIDER_OPENAI_COMPATIBLE:
             return PROVIDER_OPENAI
         if p in (PROVIDER_OPENAI, PROVIDER_OLLAMA):
             return p
-    if base_url and "ollama" in base_url:
+        raise ValueError(
+            f"Unsupported LLM provider: {provider!r}. "
+            f"Allowed: openai / openai_compatible / ollama"
+        )
+    if base_url and "ollama" in base_url.lower():
         return PROVIDER_OLLAMA
-    return fallback or PROVIDER_OPENAI
+    if not fallback:
+        return PROVIDER_OPENAI
+    f = fallback.strip().lower()
+    if f == PROVIDER_OPENAI_COMPATIBLE:
+        return PROVIDER_OPENAI
+    if f in (PROVIDER_OPENAI, PROVIDER_OLLAMA):
+        return f
+    raise ValueError(
+        f"Unsupported fallback LLM provider: {fallback!r}. "
+        f"Allowed: openai / openai_compatible / ollama"
+    )
 
 
 def _normalize_api_header_prefix(prefix: Optional[str]) -> str:
@@ -76,9 +98,9 @@ class LLMClient:
             provider: "ollama" or "openai" (default: auto-detect from base_url, then settings)
             timeout: Request timeout in seconds
         """
-        self.base_url = base_url or settings.llm_base_url
-        self.model = model or settings.llm_model
-        self.api_key = api_key or settings.llm_api_key
+        self.base_url = base_url if base_url is not None else settings.llm_base_url
+        self.model = model if model is not None else settings.llm_model
+        self.api_key = api_key if api_key is not None else settings.llm_api_key
         self.timeout = timeout
         self.api_header_name = (api_header_name or "").strip()
         self.api_header_prefix = _normalize_api_header_prefix(
@@ -160,15 +182,17 @@ class LLMClient:
                 f"{self.base_url}/api/chat",
                 json=payload,
                 stream=True,
-                timeout=120,
+                timeout=self.timeout,
             )
+            response.raise_for_status()
             return self._stream_ollama(response)
         else:
             response = requests.post(
                 f"{self.base_url}/api/chat",
                 json=payload,
-                timeout=120,
+                timeout=self.timeout,
             )
+            response.raise_for_status()
             result = response.json()
             return result.get("message", {}).get("content", "")
 
@@ -260,7 +284,11 @@ class LLMClient:
             )
 
         # 复用实例字段构建 vision 请求
-        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        client = OpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url,
+            timeout=self.timeout,
+        )
         model = self.model
 
         messages = [
@@ -303,8 +331,9 @@ class LLMClient:
                 f"{self.base_url}/api/chat",
                 json={"model": self.model, "messages": messages, "stream": True, "options": {"temperature": temperature}},
                 stream=True,
-                timeout=120,
+                timeout=self.timeout,
             )
+            response.raise_for_status()
             # 先读完所有内容，再 yield（解决生成器在HTTP请求中的问题）
             chunks = []
             for line in response.iter_lines():
