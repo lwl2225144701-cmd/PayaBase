@@ -1,0 +1,150 @@
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # PostgreSQL (vector search)
+    postgres_host: str = "postgres"
+    postgres_port: int = 5432
+    postgres_user: str = "training"
+    postgres_password: str = "xxx"
+    postgres_db: str = "training_agent"
+
+    # MySQL (user registration, document metadata)
+    mysql_host: str = "mysql"
+    mysql_port: int = 3306
+    mysql_user: str = "training"
+    mysql_password: str = "xxx"
+    mysql_db: str = "training_agent"
+
+    # Redis
+    redis_host: str = "redis"
+    redis_port: int = 6379
+
+    # MinIO
+    minio_endpoint: str = "minio:9000"
+    minio_access_key: str = "xxx"
+    minio_secret_key: str = "xxx"
+    minio_bucket: str = "training-docs"
+
+    # SSO
+    sso_client_id: str = "xxx"
+    sso_client_secret: str = "xxx"
+    sso_redirect_uri: str = "xxx"
+
+    # Feishu/Lark
+    feishu_app_id: str = ""
+    feishu_app_secret: str = ""
+    feishu_verification_token: str = ""
+    feishu_oauth_scope: str = "authen:read_user_info"
+    feishu_oauth_redirect_uri: str = ""
+
+    # HR API
+    hr_api_url: str = "http://hr-api:8080"
+    hr_api_key: str = "xxx"
+
+    # JWT
+    jwt_secret: str = "xxx"
+    jwt_expire_minutes: int = 1440
+
+    # Vector Service
+    vector_service_url: str = "http://localhost:8001"
+
+    # Celery
+    celery_broker_url: str = "redis://localhost:6379/0"
+    celery_result_backend: str = "redis://localhost:6379/1"
+
+    # LLM
+    llm_provider: str = "openai"
+    llm_api_key: str = "xxx"
+    llm_base_url: str = "https://api.openai.com/v1"
+    llm_model: str = "gpt-4"
+
+    # Rerank
+    rerank_service_url: str = "http://rerank-service:8003"
+    rerank_override: str = "auto"  # auto|on|off
+    rerank_candidate_k: int = 5
+    rerank_cache_ttl_sec: int = 120
+    rerank_policy_version: str = "v1"
+    rerank_model: str = "BAAI/bge-reranker-base"
+    rerank_gap_threshold: float = 0.03
+    rerank_query_len_threshold: int = 8
+
+    # Search (OpenSERP)
+    search_service_url: str = "http://localhost:8004"
+    search_default_engine: str = "baidu"
+    search_default_limit: int = 5
+    search_timeout_sec: int = 20
+    search_cache_ttl_sec: int = 180
+    search_failure_threshold: int = 3
+    search_failure_cooldown_sec: int = 60
+    search_fallback_engine: str = "bing"
+
+    # PPT Generation
+    ppt_minio_bucket: str = "ppt-files"
+
+    # PDF Generation
+    pdf_minio_bucket: str = "pdf-files"
+
+    # Indexing
+    index_md_chunk_size: int = 800
+    index_image_chunk_size: int = 500
+    index_word_chunk_size: int = 700
+    index_chunk_overlap: int = 100
+    index_enable_image_vision: bool = True
+
+    # Agent
+    max_iterations: int = 5
+    memory_limit: int = 10
+    chat_request_concurrency: int = 4
+    attachment_parse_concurrency: int = 2
+
+    # Attachment
+    max_attachment_size: int = 10 * 1024 * 1024  # 10MB
+    llm_vision_model: str = ""  # fallback to llm_model if empty
+    llm_vision_api_key: str = ""  # vision model API key (fallback to llm_api_key)
+    llm_vision_base_url: str = ""  # vision model base URL (fallback to llm_base_url)
+    temp_attachment_prefix: str = "temp_attachments"
+
+    # Intent classification model (lightweight, fast)
+    llm_classify_model: str = ""  # fallback to llm_model
+    llm_classify_api_key: str = ""  # fallback to llm_api_key
+    llm_classify_base_url: str = ""  # fallback to llm_base_url
+    llm_classify_timeout: int = 30
+
+    # Chat generation model (high quality)
+    llm_chat_model: str = ""  # fallback to llm_model
+    llm_chat_api_key: str = ""  # fallback to llm_api_key
+    llm_chat_base_url: str = ""  # fallback to llm_base_url
+    llm_chat_api_header_name: str = ""
+    llm_chat_api_header_prefix: str = "Bearer "
+
+    # SQLAlchemy pool
+    db_pool_size: int = 10
+    db_max_overflow: int = 20
+    db_pool_timeout: int = 30
+    db_pool_recycle: int = 1800
+
+    @property
+    def database_url(self) -> str:
+        return f"postgresql+asyncpg://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+
+    @property
+    def sync_database_url(self) -> str:
+        return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+
+    @property
+    def mysql_url(self) -> str:
+        return f"mysql+aiomysql://{self.mysql_user}:{self.mysql_password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
+
+    @property
+    def sync_mysql_url(self) -> str:
+        return f"mysql+pymysql://{self.mysql_user}:{self.mysql_password}@{self.mysql_host}:{self.mysql_port}/{self.mysql_db}"
+
+    @property
+    def redis_url(self) -> str:
+        return f"redis://{self.redis_host}:{self.redis_port}"
+
+
+settings = Settings()

@@ -1,0 +1,118 @@
+package baidu
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/karust/openserp/core"
+	"github.com/sirupsen/logrus"
+)
+
+func dateToTimestamp(date string) (int64, error) {
+	layout := "20060102"
+	t, err := time.Parse(layout, date)
+	if err != nil {
+		return 0, err
+	}
+
+	return t.Unix(), nil
+}
+
+// BuildURL builds a Baidu web search URL from Query fields.
+// It returns an error when query text, date, or pagination parameters are invalid.
+func BuildURL(q core.Query) (string, error) {
+	base, _ := url.Parse("https://www.baidu.com/")
+	base.Path += "s"
+
+	params := url.Values{}
+	if q.Text != "" || q.Site != "" || q.Filetype != "" {
+		text := q.Text
+		if q.Site != "" {
+			text += " site:" + q.Site
+		}
+		if q.Filetype != "" {
+			text += " filetype:" + q.Filetype
+		}
+		params.Add("wd", text)
+	}
+
+	if q.DateInterval != "" {
+		dateInterval := strings.Split(q.DateInterval, "..")
+
+		ts1, err := dateToTimestamp(dateInterval[0])
+		if err != nil {
+			return "", err
+		}
+		ts2, err := dateToTimestamp(dateInterval[1])
+		if err != nil {
+			return "", err
+		}
+
+		params.Add("gpc", fmt.Sprintf("stf=%d,%d|stftype=2", ts1, ts2))
+	}
+
+	if q.LangCode != "" {
+		//params.Add("rqlang", q.LangCode)
+		logrus.Warn("Language search not supported")
+	}
+
+	if q.Filetype != "" {
+		//params.Add("ft", q.Filetype)
+		logrus.Warn("File search not supported")
+	}
+
+	if q.Limit != 0 {
+		params.Add("rn", strconv.Itoa(q.Limit))
+	}
+	if q.Start < 0 {
+		return "", errors.New("incorrect start provided")
+	}
+	if q.Start > 0 {
+		// Baidu uses "pn" as result offset for pagination.
+		params.Add("pn", strconv.Itoa(q.Start))
+	}
+
+	if len(params.Get("wd")) == 0 {
+		return "", errors.New("Empty query built")
+	}
+
+	params.Add("f", "8")
+	params.Add("ie", "utf-8")
+	base.RawQuery = params.Encode()
+	return base.String(), nil
+}
+
+// BuildImageURL builds a Baidu image search URL from Query fields and page
+// index. It returns an error when the query text is empty.
+func BuildImageURL(q core.Query, pageNum int) (string, error) {
+	base, _ := url.Parse("https://image.baidu.com/")
+	base.Path += "search/acjson"
+
+	params := url.Values{}
+	params.Add("tn", "resultjson_com")
+	params.Add("cl", "2") // Cl = 2 indicates image search
+
+	if q.Text != "" {
+		params.Add("word", q.Text)
+	}
+
+	if len(params.Get("word")) == 0 {
+		return "", errors.New("Empty query built")
+	}
+
+	if q.Limit != 0 {
+		params.Add("rn", "30")                     // Results per page
+		params.Add("pn", strconv.Itoa(pageNum*30)) // Offset
+	}
+
+	params.Add("fp", "result")
+	params.Add("ipn", "rj")
+	params.Add("ie", "utf-8")
+	params.Add("oe", "utf-8")
+	base.RawQuery = params.Encode()
+	return base.String(), nil
+}

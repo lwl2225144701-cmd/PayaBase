@@ -1,0 +1,343 @@
+package core
+
+import (
+	"crypto/md5"
+	"encoding/base64"
+	"encoding/hex"
+	"fmt"
+	"net/url"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+const responseIDBytes = 8
+
+var imageDimensionPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)height:\s*(\d+),\s*width:\s*(\d+)`),
+	regexp.MustCompile(`(?i)\b(\d+)x(\d+)\b`),
+}
+
+// EnrichContext carries request-scoped values needed to enrich a raw result.
+type EnrichContext struct {
+	Engine string
+	Query  Query
+}
+
+// EnrichResult converts a raw engine result into the v1 Result shape.
+func EnrichResult(raw SearchResult, ctx EnrichContext) Result {
+	normalizedURL := normalizeURL(raw.URL)
+	domain := extractDomain(normalizedURL)
+	displayURL := buildDisplayURL(normalizedURL, domain)
+	favicon := ""
+	if domain != "" {
+		favicon = "https://" + domain + "/favicon.ico"
+	}
+
+	resultType := ResultTypeOrganic
+	if raw.Ad {
+		resultType = ResultTypeAd
+	}
+	// Google answer boxes use negative rank; promote to answer_box type.
+	if raw.Rank <= 0 && !raw.Ad {
+		resultType = ResultTypeAnswerBox
+	}
+
+	limit := ctx.Query.Limit
+	if limit <= 0 {
+		limit = 25
+	}
+	page := ctx.Query.Start/limit + 1
+	absolute, onPage := computeResultPosition(raw.Rank, ctx.Query.Start)
+
+	result := Result{
+		ID:         buildResultID(ctx.Engine, normalizedURL),
+		Rank:       raw.Rank,
+		Type:       resultType,
+		Title:      raw.Title,
+		URL:        normalizedURL,
+		DisplayURL: displayURL,
+		Snippet:    raw.Description,
+		Domain:     domain,
+		Favicon:    favicon,
+		IsAd:       raw.Ad,
+		Position: Position{
+			Absolute: absolute,
+			Page:     page,
+			OnPage:   onPage,
+		},
+		Engine: ctx.Engine,
+	}
+
+	result.DomainInfo = EnrichDomainInfo(domain)
+	result.Classification = ClassifyURL(normalizedURL, domain)
+
+	return result
+}
+
+// EnrichImageResult converts a raw engine result into the v1 ImageResult shape.
+func EnrichImageResult(raw SearchResult, ctx EnrichContext) ImageResult {
+	imageURL := normalizeURL(raw.URL)
+	meta := parseImageDescription(raw.Description)
+
+	pageURL := meta.PageURL
+	if pageURL == "" {
+		pageURL = imageURL
+	}
+	pageURL = normalizeURL(pageURL)
+	sourceDomain := extractDomain(pageURL)
+	imageWidth, imageHeight := meta.Width, meta.Height
+
+	return ImageResult{
+		ID:    buildImageID(ctx.Engine, imageURL),
+		Rank:  raw.Rank,
+		Type:  ResultTypeImage,
+		Title: raw.Title,
+		Image: ImageData{
+			URL:       imageURL,
+			Thumbnail: meta.ThumbnailURL,
+			Width:     imageWidth,
+			Height:    imageHeight,
+		},
+		Source: ImageSource{
+			PageURL: pageURL,
+			Domain:  sourceDomain,
+		},
+		Engine: ctx.Engine,
+	}
+}
+
+// buildResultID returns a stable "s_<hex>" ID for web results.
+func buildResultID(engine, normalizedURL string) string {
+	return "s_" + shortMD5(engine+"|"+normalizedURL)
+}
+
+// buildImageID returns a stable "i_<hex>" ID for image results.
+func buildImageID(engine, imageURL string) string {
+	return "i_" + shortMD5(engine+"|"+imageURL)
+}
+
+func shortMD5(value string) string {
+	h := md5.Sum([]byte(value))
+	return hex.EncodeToString(h[:responseIDBytes])
+}
+
+func computeResultPosition(rank, start int) (absolute, onPage int) {
+	if rank <= 0 {
+		return 0, 0
+	}
+	if start > 0 && rank > start {
+		return rank, rank - start
+	}
+	return start + rank, rank
+}
+
+// normalizeURL lowercases scheme+host, strips trailing slash, and removes
+// common tracking parameters. This is the canonical form used for ID hashing.
+func normalizeURL(raw string) string {
+	if raw == "" {
+		return raw
+	}
+	// Unwrap Bing redirect URLs: bing.com/ck/a?...&u=a1<base64url>
+	if strings.Contains(raw, "bing.com/ck/a") {
+		if unwrapped := unwrapBingURL(raw); unwrapped != "" {
+			raw = unwrapped
+		}
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+
+	u.Scheme = strings.ToLower(u.Scheme)
+	u.Host = strings.ToLower(u.Host)
+
+	// Strip common tracking parameters.
+	q := u.Query()
+	trackingParams := []string{
+		"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+		"fbclid", "gclid", "msclkid", "ref", "_ga",
+	}
+	for _, p := range trackingParams {
+		q.Del(p)
+	}
+	u.RawQuery = q.Encode()
+
+	normalized := u.String()
+	// Strip trailing slash from path (but keep root slash for bare domains).
+	if u.Path != "/" && strings.HasSuffix(normalized, "/") {
+		normalized = strings.TrimRight(normalized, "/")
+	}
+	return normalized
+}
+
+// unwrapBingURL extracts the real destination from a Bing click-tracking URL.
+// Bing encodes as: u=a1<url-safe-base64-without-padding>
+func unwrapBingURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	uParam := u.Query().Get("u")
+	if !strings.HasPrefix(uParam, "a1") {
+		return ""
+	}
+	encoded := uParam[2:]
+	// Bing uses URL-safe base64 without padding; add padding.
+	switch len(encoded) % 4 {
+	case 2:
+		encoded += "=="
+	case 3:
+		encoded += "="
+	}
+	import64 := strings.NewReplacer("-", "+", "_", "/")
+	decoded, err := decodeBase64String(import64.Replace(encoded))
+	if err != nil {
+		return ""
+	}
+	candidate := string(decoded)
+	if strings.HasPrefix(candidate, "http://") || strings.HasPrefix(candidate, "https://") {
+		return candidate
+	}
+	return ""
+}
+
+// extractDomain returns the registrable domain (no www.) from a URL string.
+func extractDomain(rawURL string) string {
+	if rawURL == "" {
+		return ""
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	host := u.Hostname()
+	host = strings.TrimPrefix(host, "www.")
+	return host
+}
+
+// buildDisplayURL returns a human-readable URL breadcrumb similar to what
+// search engines show on SERPs (e.g. "go.dev › doc › install").
+func buildDisplayURL(rawURL, domain string) string {
+	if rawURL == "" {
+		return domain
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Path == "" || u.Path == "/" {
+		return domain
+	}
+
+	// Replace path separators with › for breadcrumb style.
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	nonEmpty := parts[:0]
+	for _, p := range parts {
+		if p != "" {
+			nonEmpty = append(nonEmpty, p)
+		}
+	}
+	if len(nonEmpty) == 0 {
+		return domain
+	}
+
+	breadcrumb := domain + " › " + strings.Join(nonEmpty, " › ")
+	// Truncate to ~60 chars.
+	const maxLen = 60
+	if len(breadcrumb) > maxLen {
+		breadcrumb = breadcrumb[:maxLen-1] + "…"
+	}
+	return breadcrumb
+}
+
+// decodeBase64String decodes standard (not URL-safe) base64.
+func decodeBase64String(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
+}
+
+type imageDescriptionMeta struct {
+	PageURL      string
+	ThumbnailURL string
+	Width        int
+	Height       int
+}
+
+func parseImageDescription(desc string) imageDescriptionMeta {
+	meta := imageDescriptionMeta{}
+	trimmed := strings.TrimSpace(desc)
+	if trimmed == "" {
+		return meta
+	}
+
+	lower := strings.ToLower(trimmed)
+	if idx := strings.Index(lower, "source page:"); idx >= 0 {
+		meta.PageURL = strings.TrimSpace(trimmed[idx+len("source page:"):])
+		if comma := strings.Index(meta.PageURL, ","); comma >= 0 {
+			meta.PageURL = strings.TrimSpace(meta.PageURL[:comma])
+		}
+	} else if strings.HasPrefix(lower, "source:") {
+		meta.PageURL = strings.TrimSpace(trimmed[len("source:"):])
+	}
+
+	if idx := strings.Index(lower, "thumb_url:"); idx >= 0 {
+		meta.ThumbnailURL = strings.TrimSpace(trimmed[idx+len("thumb_url:"):])
+		if comma := strings.Index(meta.ThumbnailURL, ","); comma >= 0 {
+			meta.ThumbnailURL = strings.TrimSpace(meta.ThumbnailURL[:comma])
+		}
+	}
+
+	for _, pattern := range imageDimensionPatterns {
+		match := pattern.FindStringSubmatch(trimmed)
+		if len(match) != 3 {
+			continue
+		}
+		first, firstErr := strconv.Atoi(match[1])
+		second, secondErr := strconv.Atoi(match[2])
+		if firstErr != nil || secondErr != nil {
+			continue
+		}
+		if strings.Contains(strings.ToLower(match[0]), "height") {
+			meta.Height = first
+			meta.Width = second
+		} else {
+			meta.Width = first
+			meta.Height = second
+		}
+		break
+	}
+
+	if !isHTTPURL(meta.PageURL) {
+		meta.PageURL = ""
+	}
+	if !isHTTPURL(meta.ThumbnailURL) {
+		meta.ThumbnailURL = ""
+	}
+	return meta
+}
+
+func isHTTPURL(value string) bool {
+	return strings.HasPrefix(value, "http://") || strings.HasPrefix(value, "https://")
+}
+
+// NormalizeURLForClustering returns a URL suitable for cross-engine grouping
+// (same as normalizeURL but exported for use in cluster building).
+func NormalizeURLForClustering(rawURL string) string {
+	return normalizeURL(rawURL)
+}
+
+// ResultID returns the stable ID for a given engine + URL pair.
+func ResultID(engine, rawURL string) string {
+	return buildResultID(engine, normalizeURL(rawURL))
+}
+
+// ValidateResultType returns the input type if it is a known enum value,
+// otherwise returns ResultTypeOrganic with a warning message.
+func ValidateResultType(t ResultType) (ResultType, string) {
+	switch t {
+	case ResultTypeOrganic, ResultTypeAd, ResultTypeFeaturedSnippet,
+		ResultTypeKnowledgePanel, ResultTypePeopleAlsoAsk, ResultTypeVideo,
+		ResultTypeImage, ResultTypeNews, ResultTypeShopping,
+		ResultTypeLocal, ResultTypeAnswerBox:
+		return t, ""
+	}
+	return ResultTypeOrganic, fmt.Sprintf("unknown result type %q, defaulting to organic", t)
+}
