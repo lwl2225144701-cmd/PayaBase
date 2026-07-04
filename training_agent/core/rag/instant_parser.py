@@ -116,12 +116,12 @@ class InstantFileParser:
 
     def _parse_image_safe(self, content: bytes, ext: str, page: int = 0, idx: int = 0) -> str | None:
         """Analyze image via LLM Vision. Returns None if vision is unavailable."""
-        from core.llm.client import LLMClient
+        from core.llm.factory import get_llm_client
 
         b64 = base64.b64encode(content).decode("utf-8")
         mime = f"image/{'jpeg' if ext == 'jpg' else ext}"
 
-        llm = LLMClient()
+        llm = get_llm_client("vision")
         try:
             result = llm.chat_with_image(b64, VISION_PROMPT, mime_type=mime)
             if page > 0:

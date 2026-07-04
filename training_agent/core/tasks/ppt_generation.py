@@ -53,16 +53,10 @@ def update_ppt_status(
 
 def generate_slides_json(title: str, content: str) -> list[dict]:
     """Use LLM to generate structured slides JSON from content."""
-    from core.llm.client import LLMClient
+    from core.llm.factory import get_llm_client
     from core.prompts.ppt import PPT_STRUCTURE_PROMPT
 
-    llm = LLMClient(
-        api_key=settings.llm_chat_api_key or settings.llm_api_key,
-        base_url=settings.llm_chat_base_url or settings.llm_base_url,
-        model=settings.llm_chat_model or settings.llm_model,
-        api_header_name=settings.llm_chat_api_header_name,
-        api_header_prefix=settings.llm_chat_api_header_prefix,
-    )
+    llm = get_llm_client("chat")
 
     prompt = PPT_STRUCTURE_PROMPT.format(content=content[:8000])
     messages = [

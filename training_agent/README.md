@@ -91,7 +91,8 @@ curl http://127.0.0.1:8123/health
 - SQLAlchemy 2.x + PostgreSQL + pgvector
 - Redis + Celery（异步索引与长任务）
 - MinIO（文档与附件对象存储）
-- LLM / Embedding / Rerank（可配置 OpenAI 兼容接口）
+- LLM / Embedding / Rerank(可配置 OpenAI 兼容接口)
+- **生成模型配置化(策略 + 工厂)**:通过 `LLM_*` / `LLM_CHAT_*` / `LLM_CLASSIFY_*` / `LLM_VISION_*` 切换云端/本地模型,**不改业务代码**
 
 ## 目录结构（核心模块）
 
@@ -102,6 +103,56 @@ curl http://127.0.0.1:8123/health
 - `core/adapters/`：平台消息适配器（feishu/wechat/qq）
 - `core/agent/`：意图分类、ReAct Agent 编排
 - `models/`：ORM 模型
+
+## 模型配置化(LLM Factory)
+
+业务层不感知 provider / api_key / base_url / model,统一通过 `core.llm.factory.get_llm_client(purpose)` 获取。
+
+| purpose | 典型用途 | 配置前缀(空 = 跟随 LLM_*) |
+|---|---|---|
+| `default` | 通用 / 兜底 | `LLM_*` |
+| `classify` | 路由、HyDE 摘要、KB 分类 | `LLM_CLASSIFY_*` |
+| `chat` | 对话生成、流式输出 | `LLM_CHAT_*` |
+| `vision` | 图片解析、文档 OCR | `LLM_VISION_*` |
+
+支持 `provider`:
+- `openai`(OpenAI 官方或任何 OpenAI 兼容协议)
+- `openai_compatible`(语义同 openai,工厂自动归一)
+- `ollama`(本地)
+
+### 场景 A:云端生成 + 本地分类
+
+```env
+LLM_PROVIDER=openai_compatible
+LLM_API_KEY=sk-xxx
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+
+LLM_CLASSIFY_PROVIDER=ollama
+LLM_CLASSIFY_BASE_URL=http://localhost:11434
+LLM_CLASSIFY_MODEL=qwen2.5:7b
+
+LLM_CHAT_PROVIDER=openai_compatible
+LLM_CHAT_API_KEY=sk-xxx
+LLM_CHAT_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+LLM_CHAT_MODEL=qwen-plus
+```
+
+### 场景 B:全本地 ollama
+
+```env
+LLM_PROVIDER=ollama
+LLM_BASE_URL=http://localhost:11434
+LLM_MODEL=qwen2.5:7b
+LLM_CHAT_PROVIDER=ollama
+LLM_CHAT_BASE_URL=http://localhost:11434
+LLM_CHAT_MODEL=qwen2.5:7b
+LLM_CLASSIFY_PROVIDER=ollama
+LLM_CLASSIFY_BASE_URL=http://localhost:11434
+LLM_CLASSIFY_MODEL=qwen2.5:7b
+```
+
+切换模型时:**只改 .env,不动业务代码、不重启策略层**(`get_llm_client` 内部按 `(purpose, timeout)` 缓存,改完调用 `core.llm.factory.clear_llm_client_cache()` 立即生效)。
 - `scripts/`：初始化与迁移脚本
 
 ## 启动流程（本地开发）

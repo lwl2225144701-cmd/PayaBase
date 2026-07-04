@@ -1,6 +1,11 @@
 """LLM Client.
 
 LLM calling client (OpenAI / Ollama / OpenAI-compatible REST).
+
+设计原则:
+- 对外方法保持稳定: chat / stream_chat / chat_with_tools / chat_with_image
+- provider 在构造时规范化,内部只识别三种: ollama / openai(包含 openai_compatible)
+- 业务层不直接 new LLMClient,统一通过 core.llm.factory.get_llm_client() 取得
 """
 
 from typing import Any, Generator, Optional
@@ -11,8 +16,26 @@ import requests
 from openai import OpenAI
 
 from core.config import settings
+from core.llm.profiles import (
+    PROVIDER_OLLAMA,
+    PROVIDER_OPENAI,
+    PROVIDER_OPENAI_COMPATIBLE,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_provider(provider: Optional[str], base_url: Optional[str], fallback: str) -> str:
+    """统一 provider 命名:openai_compatible -> openai;其他/空 -> 推断或回退。"""
+    if provider:
+        p = provider.strip().lower()
+        if p == PROVIDER_OPENAI_COMPATIBLE:
+            return PROVIDER_OPENAI
+        if p in (PROVIDER_OPENAI, PROVIDER_OLLAMA):
+            return p
+    if base_url and "ollama" in base_url:
+        return PROVIDER_OLLAMA
+    return fallback or PROVIDER_OPENAI
 
 
 class LLMClient:
@@ -45,12 +68,7 @@ class LLMClient:
         self.api_header_prefix = "Bearer " if api_header_prefix is None else api_header_prefix
 
         # Determine provider: explicit > auto-detect > global setting
-        if provider:
-            self.provider = provider
-        elif base_url and "ollama" not in base_url:
-            self.provider = "openai"
-        else:
-            self.provider = settings.llm_provider
+        self.provider = _normalize_provider(provider, base_url, settings.llm_provider)
 
         if self.provider == "ollama":
             self.client = None
@@ -213,6 +231,13 @@ class LLMClient:
         if not settings.llm_vision_model:
             raise RuntimeError(
                 "未配置 Vision 模型。请设置 LLM_VISION_MODEL 环境变量（如 qwen-vl-plus）。"
+            )
+
+        # 本地 Ollama 默认不支持 vision
+        if self.provider == PROVIDER_OLLAMA:
+            raise RuntimeError(
+                "当前 provider=ollama 不支持 Vision API,请在 .env 配置 LLM_VISION_PROVIDER "
+                "为 openai / openai_compatible,并提供 LLM_VISION_API_KEY / LLM_VISION_BASE_URL。"
             )
 
         # Vision may use a different API endpoint than the main LLM

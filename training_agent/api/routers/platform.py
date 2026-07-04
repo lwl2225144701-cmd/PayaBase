@@ -12,7 +12,7 @@ from core.adapters.base import PlatformMessage
 from core.adapters.registry import get_adapter
 from core.config import settings
 from core.embedding.client import EmbeddingClient
-from core.llm.client import LLMClient
+from core.llm.factory import get_llm_client
 from core.prompts.chat import build_kb_only_prompt
 from core.prompts.platform import get_platform_prompt
 from core.rag.retriever import Retriever
@@ -158,13 +158,7 @@ async def _build_assistant_answer(
         messages.append({"role": m.role, "content": m.content})
     messages.append({"role": "user", "content": incoming.content})
 
-    llm = LLMClient(
-        api_key=settings.llm_chat_api_key or settings.llm_api_key,
-        base_url=settings.llm_chat_base_url or settings.llm_base_url,
-        model=settings.llm_chat_model or settings.llm_model,
-        api_header_name=settings.llm_chat_api_header_name,
-        api_header_prefix=settings.llm_chat_api_header_prefix,
-    )
+    llm = get_llm_client("chat")
     answer = llm.chat(messages, stream=False, temperature=0.1)
     if not answer:
         answer = get_platform_prompt(platform, "fallback")

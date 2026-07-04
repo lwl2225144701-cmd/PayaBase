@@ -118,12 +118,12 @@ class ImageBinder:
 
         try:
             import base64
-            from core.llm.client import LLMClient
+            from core.llm.factory import get_llm_client
             from core.prompts.vision import VISION_PROMPT
 
             mime = f"image/{'jpeg' if extension.lower() == 'jpg' else extension.lower()}"
             image_b64 = base64.b64encode(image_bytes).decode("utf-8")
-            return LLMClient().chat_with_image(image_b64, VISION_PROMPT, mime_type=mime).strip()
+            return get_llm_client("vision").chat_with_image(image_b64, VISION_PROMPT, mime_type=mime).strip()
         except Exception as e:
             logger.warning(f"[ImageBinder] Vision解析失败: {e}")
             return ""

@@ -219,12 +219,12 @@ def parse_image_document(
     if not settings.llm_vision_model:
         raise ValueError("图片解析需要配置 LLM_VISION_MODEL")
 
-    from core.llm.client import LLMClient
+    from core.llm.factory import get_llm_client
     from core.prompts.vision import VISION_PROMPT
 
     mime = f"image/{'jpeg' if file_ext == 'jpg' else file_ext}"
     image_b64 = base64.b64encode(file_data).decode("utf-8")
-    result = LLMClient().chat_with_image(image_b64, VISION_PROMPT, mime_type=mime)
+    result = get_llm_client("vision").chat_with_image(image_b64, VISION_PROMPT, mime_type=mime)
     text_content = f"【图片解析结果】\n{result.strip()}"
 
     return [
@@ -469,12 +469,12 @@ def generate_summary(text: str, max_length: int = 100) -> str:
     
     使用LLM生成摘要，使得检索更具判别力
     """
-    from core.llm.client import LLMClient
-    
+    from core.llm.factory import get_llm_client
+
     if len(text) < 200:
         return text
-    
-    llm = LLMClient()
+
+    llm = get_llm_client("chat")
     prompt = SUMMARY_USER_PROMPT.format(max_length=max_length, text=text[:2000])
 
     try:
@@ -490,9 +490,9 @@ def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[s
     
     检索时匹配"用户问题"与"预设问题"，提高匹配准确度
     """
-    from core.llm.client import LLMClient
-    
-    llm = LLMClient()
+    from core.llm.factory import get_llm_client
+
+    llm = get_llm_client("chat")
     prompt = HYDE_USER_PROMPT.format(num_questions=num_questions, text=text[:1500])
 
     try:

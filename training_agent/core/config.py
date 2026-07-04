@@ -120,6 +120,18 @@ class Settings(BaseSettings):
     llm_chat_api_header_name: str = ""
     llm_chat_api_header_prefix: str = "Bearer "
 
+    # === Provider 维度的扩展(配置化生成模型) ===
+    # 默认 provider 仍沿用 llm_provider,这里仅按用途覆盖;留空 = 跟随 llm_provider
+    llm_classify_provider: str = ""
+    llm_chat_provider: str = ""
+    llm_vision_provider: str = ""
+
+    # === 各用途超时(秒) ===
+    llm_default_timeout: float = 30.0
+    llm_chat_timeout: float = 90.0
+    llm_classify_timeout: int = 30
+    llm_vision_timeout: float = 90.0
+
     # SQLAlchemy pool
     db_pool_size: int = 10
     db_max_overflow: int = 20

@@ -58,6 +58,8 @@ from core.chat.web_search_state import (
     process_kb_miss,
 )
 from core.chat.chat_context import build_context_from_chunks, build_material_text
+from core.chat.chat_state import ChatRuntimeState
+from core.llm.factory import get_llm_client
 from models.tables import KnowledgeBase, AgentRun, AgentStep
 
 logger = logging.getLogger(__name__)
@@ -125,13 +127,11 @@ async def handle_chat(
     history_messages = await get_history_messages(conv.id, db)
 
     # Build user message (with attachment injection)
-    attachment_used = False
     if all_attachments:
         blocks = []
         for fname, fcontent in all_attachments:
             blocks.append(f"[用户上传附件]\n文件名：{fname}\n内容：\n{fcontent}\n---")
         user_message_text = "\n\n".join(blocks) + "\n\n" + message
-        attachment_used = True
     else:
         user_message_text = message
 
@@ -139,80 +139,78 @@ async def handle_chat(
     logger.info(f"[Chat] 保存用户消息")
     await save_user_message(conv.id, message, db)
 
-    # === 联网搜索状态管理 ===
-    conv_meta = dict(conv.meta or {})
-    web_search_mode = conv_meta.get("web_search_mode", "off")
+    # === 初始化运行时状态(替代内嵌闭包里的 mutable 变量) ===
+    state = ChatRuntimeState(
+        web_search_mode=conv_meta.get("web_search_mode", "off"),
+        conv_meta=conv_meta,
+        active_kb_id=initial_active_kb_id,
+        active_kb_name="知识库",
+        attachment_used=bool(all_attachments),
+    )
 
     # Frontend toggle button takes priority
     if web_search is not None:
-        web_search_mode = "on" if web_search else "off"
-        conv_meta["web_search_mode"] = web_search_mode
-        conv_meta.pop("ask_pending", None)
-        conv_meta.pop("pending_ask_query", None)
-        conv.meta = conv_meta
+        state.web_search_mode = "on" if web_search else "off"
+        state.conv_meta["web_search_mode"] = state.web_search_mode
+        state.conv_meta.pop("ask_pending", None)
+        state.conv_meta.pop("pending_ask_query", None)
+        conv.meta = state.conv_meta
         db.add(conv)
         await db.commit()
 
     # Explicit keyword detection
-    if web_search_mode != "on":
-        process_web_search_explicit_keyword(message, conv_meta)
-        if conv_meta.get("web_search_mode") == "on":
-            web_search_mode = "on"
-            conv.meta = conv_meta
+    if state.web_search_mode != "on":
+        process_web_search_explicit_keyword(message, state.conv_meta)
+        if state.conv_meta.get("web_search_mode") == "on":
+            state.web_search_mode = "on"
+            conv.meta = state.conv_meta
             db.add(conv)
             await db.commit()
 
     # Ask-pending: user replied to "是否允许联网搜索"
     handled, response, new_mode = await handle_ask_pending_response(
-        message, conv_meta, conv, db,
+        message, state.conv_meta, conv, db,
     )
     if handled:
-        web_search_mode = new_mode
+        state.web_search_mode = new_mode
         return response
 
     async def generate_response():
         async with CHAT_PIPELINE_SEMAPHORE:
             t_total = time.time()
             full_content = ""
-            citations_list = []
-            artifacts: list[dict] = []
-            timings: dict[str, int] = {}
-
-            from core.llm.client import LLMClient
+            citations_list = state.citations
+            artifacts: list[dict] = state.artifacts
+            timings: dict[str, int] = state.timings
 
             t0 = time.time()
             from core.permissions import visible_knowledge_base_query
             kb_result = await db.execute(visible_knowledge_base_query(current_user))
             all_kbs = kb_result.scalars().all()
             active_kb_name = next(
-                (kb.name for kb in all_kbs if initial_active_kb_id and kb.id == initial_active_kb_id),
+                (kb.name for kb in all_kbs if state.active_kb_id and kb.id == state.active_kb_id),
                 "知识库",
             )
+            state.active_kb_name = active_kb_name
             timings["visible_kb_ms"] = int((time.time() - t0) * 1000)
             logger.info(f"[Timing] 查询知识库列表: {timings['visible_kb_ms']}ms, count={len(all_kbs)}")
 
-            active_kb_id = initial_active_kb_id
             t0 = time.time()
-            router_llm = None
-            if settings.llm_classify_model or settings.llm_classify_base_url:
-                router_llm = LLMClient(
-                    api_key=settings.llm_classify_api_key or settings.llm_api_key,
-                    base_url=settings.llm_classify_base_url or settings.llm_base_url,
-                    model=settings.llm_classify_model or settings.llm_model,
-                )
+            # 业务层不再感知 provider / api_key / base_url,统一通过工厂取
+            router_llm = get_llm_client("classify")
             router = RequestRouter(router_llm)
             orchestrator = AgentOrchestrator(router)
             agent_run_state, agent_plan = await orchestrator.start_run(
                 query=message,
                 has_attachments=bool(all_attachments),
-                has_active_kb=bool(active_kb_id),
+                has_active_kb=bool(state.active_kb_id),
             )
             route_decision = agent_run_state.route_decision
             if route_decision is None:
                 route_decision = await router.decide(
                     query=message,
                     has_attachments=bool(all_attachments),
-                    has_active_kb=bool(active_kb_id),
+                    has_active_kb=bool(state.active_kb_id),
                 )
                 agent_run_state.route_decision = route_decision
                 agent_run_state.plan_snapshot = {
@@ -293,11 +291,11 @@ async def handle_chat(
                 }
             )
 
-            chunks_data = []
+            chunks_data = state.chunks_data
             retrieval_ms = 0
             timings["embedding_ms"] = 0
             timings["retrieval_ms"] = 0
-            if active_kb_id and route_decision.route in {
+            if state.active_kb_id and route_decision.route in {
                 "rag_qa", "content_generation", "ppt_generation",
                 "pdf_generation", "document_summary",
             }:
@@ -312,7 +310,7 @@ async def handle_chat(
                     t0 = time.time()
                     retriever = Retriever(db)
                     retrieved, retrieval_timings = await retriever.similarity_search(
-                        query_vector, str(active_kb_id),
+                        query_vector, str(state.active_kb_id),
                         top_k=5, threshold=0.2,
                         query_text=message,
                         use_rerank=True,
@@ -336,64 +334,59 @@ async def handle_chat(
                     )
 
                     for c in retrieved:
-                        citations_list.append({
+                        state.citations.append({
                             "chunk_id": c.chunk_id,
                             "document_title": c.document_title,
                             "score": c.score,
                         })
-                        chunks_data.append({
+                        state.chunks_data.append({
                             "content": c.content,
                             "source": c.metadata.get("source") or f"知识库-{c.document_title}",
                             "chunk_type": c.metadata.get("chunk_strategy", "paragraph"),
                         })
+                    # 同步本地变量,避免后面再回读
+                    chunks_data = state.chunks_data
                 except Exception as e:
                     logger.warning(f"[Timing] RAG检索失败: {e}, 耗时={(time.time()-t0)*1000:.0f}ms")
 
-            if active_kb_id:
-                logger.info(f"[Timing] kb_id={str(active_kb_id)[:8]}..., chunks={len(chunks_data)}")
+            if state.active_kb_id:
+                logger.info(f"[Timing] kb_id={str(state.active_kb_id)[:8]}..., chunks={len(state.chunks_data)}")
 
-            # === KB miss handling ===
-            # web_search_mode is a local variable now, no need for nonlocal
-            if active_kb_id and not chunks_data and not all_attachments:
-                web_search_mode_local = process_kb_miss(
-                    active_kb_id=bool(active_kb_id),
-                    chunks_data=chunks_data,
+            # === KB miss handling:写回 state.web_search_mode(无 nonlocal) ===
+            if state.active_kb_id and not state.chunks_data and not all_attachments:
+                new_mode = process_kb_miss(
+                    active_kb_id=bool(state.active_kb_id),
+                    chunks_data=state.chunks_data,
                     all_attachments=all_attachments,
-                    web_search_mode=web_search_mode,
-                    conv_meta=conv_meta,
+                    web_search_mode=state.web_search_mode,
+                    conv_meta=state.conv_meta,
                     pending_query=message,
                 )
-                if web_search_mode_local != web_search_mode:
-                    web_search_mode = web_search_mode_local
-                    conv.meta = conv_meta
+                if new_mode != state.web_search_mode:
+                    state.web_search_mode = new_mode
+                    conv.meta = state.conv_meta
                     db.add(conv)
                     await db.commit()
-            elif active_kb_id and chunks_data:
-                if conv_meta.get("kb_miss_count", 0) > 0:
-                    conv_meta["kb_miss_count"] = 0
-                    conv.meta = conv_meta
+            elif state.active_kb_id and state.chunks_data:
+                if state.conv_meta.get("kb_miss_count", 0) > 0:
+                    state.conv_meta["kb_miss_count"] = 0
+                    conv.meta = state.conv_meta
                     db.add(conv)
                     await db.commit()
 
-            chat_model = settings.llm_chat_model or settings.llm_model
-            llm = LLMClient(
-                api_key=settings.llm_chat_api_key or settings.llm_api_key,
-                base_url=settings.llm_chat_base_url or settings.llm_base_url,
-                model=chat_model,
-                timeout=90.0,
-                api_header_name=settings.llm_chat_api_header_name,
-                api_header_prefix=settings.llm_chat_api_header_prefix,
-            )
+            # 业务层不再感知 model / base_url / provider,通过工厂按 purpose 取
+            llm = get_llm_client("chat")
+            chat_model = llm.model  # 仅用于日志
 
             t_context = time.time()
             material_text, source_hint = build_material_text(all_attachments, chunks_data)
             autonomous_tool_mode = _should_use_autonomous_tool_mode(
                 route=route_decision.route,
                 has_attachments=bool(all_attachments),
-                allow_external_search=(task_profile.allow_external_search or web_search_mode == "on"),
+                allow_external_search=(task_profile.allow_external_search or state.web_search_mode == "on"),
             )
             available_tools = ["knowledge_retrieval", "solution_generator", "ppt_generation", "pdf_export"]
-            if autonomous_tool_mode and (task_profile.allow_external_search or web_search_mode == "on"):
+            if autonomous_tool_mode and (task_profile.allow_external_search or state.web_search_mode == "on"):
                 available_tools.insert(1, "web_search")
             timings["context_build_ms"] = int((time.time() - t_context) * 1000)
             logger.info(
@@ -407,20 +400,20 @@ async def handle_chat(
                     raise RuntimeError("forced_step1_failure_for_mvp_regression")
                 if autonomous_tool_mode:
                     registry = ToolRegistry()
-                    if active_kb_id:
+                    if state.active_kb_id:
                         registry.register(
                             KnowledgeRetrievalTool(
-                                kb_id=str(active_kb_id),
-                                kb_name=active_kb_name,
+                                kb_id=str(state.active_kb_id),
+                                kb_name=state.active_kb_name,
                             )
                         )
-                    if task_profile.allow_external_search or web_search_mode == "on":
+                    if task_profile.allow_external_search or state.web_search_mode == "on":
                         registry.register(WebSearchTool())
                     registry.register(SolutionGeneratorTool(llm))
                     registry.register(PPTGenerationTool(tenant_id=current_user.tenant_id))
                     registry.register(PDFExportTool(tenant_id=current_user.tenant_id))
 
-                    if web_search_mode == "on" or task_profile.allow_external_search:
+                    if state.web_search_mode == "on" or task_profile.allow_external_search:
                         autonomous_system_prompt = (
                             f"{SOLUTION_AGENT_PROMPT}\n\n"
                             f"当前状态：web_search 工具已就绪。"
@@ -451,7 +444,7 @@ async def handle_chat(
                             if "llm_first_token_ms" not in timings:
                                 timings["llm_first_token_ms"] = int((time.time() - t0) * 1000)
                             full_content += chunk
-                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=attachment_used)
+                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
                     timings["llm_total_ms"] = int((time.time() - t0) * 1000)
                     artifacts.extend(executor.artifacts)
                     agent_step_state.tool_trace.extend(executor.tool_trace)
@@ -491,7 +484,7 @@ async def handle_chat(
                             content="",
                             citations=[],
                             finished=False,
-                            attachment_used=attachment_used,
+                            attachment_used=state.attachment_used,
                             artifact=artifact,
                             ppt_task_id=artifact["task_id"] if artifact["type"] == "ppt" else None,
                             pdf_task_id=artifact["task_id"] if artifact["type"] == "pdf" else None,
@@ -532,13 +525,13 @@ async def handle_chat(
                     if source_hint:
                         summary_text += f"\n来源：{source_hint}"
                     full_content = summary_text
-                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=attachment_used)
+                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=state.attachment_used)
                     for artifact in artifacts:
                         yield format_sse_chunk(
                             content="",
                             citations=[],
                             finished=False,
-                            attachment_used=attachment_used,
+                            attachment_used=state.attachment_used,
                             artifact=artifact,
                             ppt_task_id=artifact["task_id"] if artifact["type"] == "ppt" else None,
                         )
@@ -578,13 +571,13 @@ async def handle_chat(
                     if source_hint:
                         summary_text += f"\n来源：{source_hint}"
                     full_content = summary_text
-                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=attachment_used)
+                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=state.attachment_used)
                     for artifact in artifacts:
                         yield format_sse_chunk(
                             content="",
                             citations=[],
                             finished=False,
-                            attachment_used=attachment_used,
+                            attachment_used=state.attachment_used,
                             artifact=artifact,
                             pdf_task_id=artifact["task_id"] if artifact["type"] == "pdf" else None,
                         )
@@ -631,20 +624,20 @@ async def handle_chat(
                                 timings["llm_first_token_ms"] = int((first_chunk_time - t0) * 1000)
                                 logger.info(f"[Timing] LLM首token: {timings['llm_first_token_ms']}ms")
                             full_content += chunk
-                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=attachment_used)
+                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
                     timings["llm_total_ms"] = int((time.time() - t0) * 1000)
                     logger.info(f"[Timing] LLM响应完成: {timings['llm_total_ms']}ms, chars={len(full_content)}")
                     # Ask-pending: append gentle ask to response
-                    if web_search_mode == "ask_pending":
+                    if state.web_search_mode == "ask_pending":
                         ask_text = '\n\n---\n知识库暂无相关信息，是否允许我开启联网搜索？（回复"好的"开启，或说"不用了"）'
                         full_content += ask_text
-                        yield format_sse_chunk(content=ask_text, citations=[], finished=False, attachment_used=attachment_used)
+                        yield format_sse_chunk(content=ask_text, citations=[], finished=False, attachment_used=state.attachment_used)
             except Exception as e:
                 logger.error(f"[Timing] LLM调用失败: {e}", exc_info=True)
                 err_msg = str(e)
                 err_type = orchestrator.policy.classify_error(err_msg)
                 fallback = orchestrator.policy.fallback_message_for(err_type)
-                yield format_sse_chunk(content=fallback, citations=[], finished=False, attachment_used=attachment_used)
+                yield format_sse_chunk(content=fallback, citations=[], finished=False, attachment_used=state.attachment_used)
                 full_content = fallback
                 orchestrator.runner.complete_step(
                     agent_run_state,
@@ -758,7 +751,7 @@ async def handle_chat(
                             async for chunk in stream_llm_response(llm, retry_messages, temperature=0.1):
                                 if chunk:
                                     retry_output += chunk
-                                    yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=attachment_used)
+                                    yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
                             if retry_output:
                                 break
                             retry_error = "retry_empty_output"
@@ -898,7 +891,7 @@ async def handle_chat(
                 db=db,
             )
 
-            yield format_sse_chunk(content="", citations=[], finished=False, attachment_used=attachment_used, agent={
+            yield format_sse_chunk(content="", citations=[], finished=False, attachment_used=state.attachment_used, agent={
                 "run_id": agent_run_state.run_id,
                 "run_db_id": str(agent_run_db_id) if agent_run_db_id else None,
                 "status": agent_run_state.status,
@@ -906,7 +899,7 @@ async def handle_chat(
                 "next_step": agent_run_state.next_step,
                 "completed_steps_summary": agent_run_state.completed_steps_summary,
             })
-            yield format_sse_chunk(content="", citations=[], finished=True, attachment_used=attachment_used, web_search_mode=web_search_mode)
+            yield format_sse_chunk(content="", citations=[], finished=True, attachment_used=state.attachment_used, web_search_mode=state.web_search_mode)
 
     return StreamingResponse(
         generate_response(),

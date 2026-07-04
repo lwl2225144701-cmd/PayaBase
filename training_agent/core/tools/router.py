@@ -16,7 +16,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from core.config import settings
-from core.llm.client import LLMClient
+from core.llm.factory import get_llm_client
 from core.tools.dataset_tool import DatasetTool
 from core.prompts.agent import ROUTER_CLASSIFY_PROMPT, ROUTER_SYSTEM_PROMPT, ROUTER_FALLBACK_PROMPT
 
@@ -102,7 +102,7 @@ class FunctionCallRouter:
         messages.extend(history)
         messages.append({"role": "user", "content": query})
 
-        llm = LLMClient()
+        llm = get_llm_client("chat")
         try:
             for chunk in llm.stream_chat(messages):
                 yield chunk
@@ -118,17 +118,20 @@ class FunctionCallRouter:
         kb_list = "\n".join([f"- {t_name}: {t.kb_description}" for t_name, t in self.tools.items()])
         prompt = self.CLASSIFY_PROMPT.format(kb_list=kb_list, query=query)
 
-        llm = LLMClient()
+        # 分类场景:走 factory 拿客户端(优先使用 LLM_CLASSIFY_* 配置,未配置时回退 LLM_*)
+        # 兼容历史实现:此处为 ollama 原生 /api/chat,直接读取 profile.base_url
+        from core.llm.factory import get_llm_profile
+        profile = get_llm_profile("classify")
         try:
             import requests
             resp = requests.post(
-                f"{settings.llm_base_url}/api/chat",
+                f"{profile.base_url}/api/chat",
                 json={
-                    "model": settings.llm_model,
+                    "model": profile.model,
                     "messages": [{"role": "user", "content": prompt}],
                     "stream": False,
                 },
-                timeout=30,
+                timeout=int(profile.timeout),
             )
             result = resp.json()
             answer = result.get("message", {}).get("content", "").strip()
@@ -158,7 +161,7 @@ class FunctionCallRouter:
         messages.extend(history)
         messages.append({"role": "user", "content": query})
 
-        llm = LLMClient()
+        llm = get_llm_client("chat")
         try:
             for chunk in llm.stream_chat(messages):
                 yield chunk
