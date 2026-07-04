@@ -140,6 +140,7 @@ async def handle_chat(
     await save_user_message(conv.id, message, db)
 
     # === 初始化运行时状态(替代内嵌闭包里的 mutable 变量) ===
+    conv_meta = dict(conv.meta or {})
     state = ChatRuntimeState(
         web_search_mode=conv_meta.get("web_search_mode", "off"),
         conv_meta=conv_meta,

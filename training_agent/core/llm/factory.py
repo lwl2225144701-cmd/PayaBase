@@ -36,6 +36,7 @@ def _normalize_provider(purpose: str, raw: str) -> str:
 
     openai_compatible 等价于 openai,统一在 client 内部走 OpenAI 兼容路径。
     空串表示跟随默认 settings.llm_provider。
+    未识别 provider 直接 raise ValueError,避免掩盖线上配置错误。
     """
     if not raw:
         return ""
@@ -44,9 +45,10 @@ def _normalize_provider(purpose: str, raw: str) -> str:
         return PROVIDER_OPENAI
     if p in (PROVIDER_OPENAI, PROVIDER_OLLAMA):
         return p
-    # 兜底:未知 provider 视为 openai
-    logger.warning(f"[LLM] 未知 provider={raw!r}(purpose={purpose}), 回落为 openai")
-    return PROVIDER_OPENAI
+    raise ValueError(
+        f"Unsupported LLM provider: {raw!r} (purpose={purpose}). "
+        f"Allowed: openai / openai_compatible / ollama"
+    )
 
 
 def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
@@ -60,8 +62,11 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
 
     s = settings
 
+    # 默认 provider 也需要校验,非法值快速失败
+    _default_provider = _normalize_provider("default", s.llm_provider) or PROVIDER_OPENAI
+
     if purpose == PURPOSE_CLASSIFY:
-        provider = _normalize_provider(purpose, s.llm_classify_provider) or s.llm_provider
+        provider = _normalize_provider(purpose, s.llm_classify_provider) or _default_provider
         return LLMProfile(
             purpose=purpose,
             provider=provider,
@@ -72,7 +77,7 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
         )
 
     if purpose == PURPOSE_CHAT:
-        provider = _normalize_provider(purpose, s.llm_chat_provider) or s.llm_provider
+        provider = _normalize_provider(purpose, s.llm_chat_provider) or _default_provider
         return LLMProfile(
             purpose=purpose,
             provider=provider,
@@ -85,7 +90,7 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
         )
 
     if purpose == PURPOSE_VISION:
-        provider = _normalize_provider(purpose, s.llm_vision_provider) or s.llm_provider
+        provider = _normalize_provider(purpose, s.llm_vision_provider) or _default_provider
         return LLMProfile(
             purpose=purpose,
             provider=provider,
@@ -98,7 +103,7 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
     # default
     return LLMProfile(
         purpose=PURPOSE_DEFAULT,
-        provider=s.llm_provider,
+        provider=_default_provider,
         api_key=s.llm_api_key,
         base_url=s.llm_base_url,
         model=s.llm_model,
@@ -108,8 +113,9 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
 
 # ===== 客户端工厂 =====
 
-# 缓存 (purpose, timeout) -> LLMClient,避免每次请求都重新构造
-_CLIENT_CACHE: dict[tuple[str, Optional[float]], object] = {}
+# 缓存 key 包含 profile 全部维度 + effective_timeout,避免配置变更后误复用旧 client。
+# 生产环境配置变更推荐重启服务;测试或热更新场景可调用 clear_llm_client_cache()。
+_CLIENT_CACHE: dict[tuple, object] = {}
 
 
 def get_llm_client(purpose: str = PURPOSE_DEFAULT, timeout: Optional[float] = None):
@@ -125,11 +131,21 @@ def get_llm_client(purpose: str = PURPOSE_DEFAULT, timeout: Optional[float] = No
     from core.llm.client import LLMClient  # 延迟导入,避免循环
 
     profile = get_llm_profile(purpose)
-    key = (profile.purpose, timeout)
-    if key in _CLIENT_CACHE:
-        return _CLIENT_CACHE[key]
-
     effective_timeout = float(timeout) if timeout is not None else profile.timeout
+
+    cache_key = (
+        profile.purpose,
+        profile.provider,
+        profile.base_url,
+        profile.model,
+        profile.api_key,
+        profile.api_header_name,
+        profile.api_header_prefix,
+        effective_timeout,
+    )
+    if cache_key in _CLIENT_CACHE:
+        return _CLIENT_CACHE[cache_key]
+
     client = LLMClient(
         api_key=profile.api_key,
         base_url=profile.base_url,
@@ -139,7 +155,7 @@ def get_llm_client(purpose: str = PURPOSE_DEFAULT, timeout: Optional[float] = No
         api_header_name=profile.api_header_name,
         api_header_prefix=profile.api_header_prefix,
     )
-    _CLIENT_CACHE[key] = client
+    _CLIENT_CACHE[cache_key] = client
     logger.info(
         f"[LLM] 创建客户端: purpose={profile.purpose}, provider={profile.provider}, "
         f"model={profile.model}, base_url={profile.base_url}"

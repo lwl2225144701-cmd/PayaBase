@@ -111,7 +111,6 @@ class Settings(BaseSettings):
     llm_classify_model: str = ""  # fallback to llm_model
     llm_classify_api_key: str = ""  # fallback to llm_api_key
     llm_classify_base_url: str = ""  # fallback to llm_base_url
-    llm_classify_timeout: int = 30
 
     # Chat generation model (high quality)
     llm_chat_model: str = ""  # fallback to llm_model

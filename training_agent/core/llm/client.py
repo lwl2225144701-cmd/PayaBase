@@ -228,9 +228,10 @@ class LLMClient:
         Raises:
             RuntimeError: If vision model is not configured or provider doesn't support vision
         """
-        if not settings.llm_vision_model:
+        # 使用工厂装配的实例字段,不再直接读 settings.llm_vision_*
+        if not self.model:
             raise RuntimeError(
-                "未配置 Vision 模型。请设置 LLM_VISION_MODEL 环境变量（如 qwen-vl-plus）。"
+                "未配置 Vision 模型，请设置 LLM_VISION_MODEL 环境变量（如 qwen-vl-plus）。"
             )
 
         # 本地 Ollama 默认不支持 vision
@@ -240,12 +241,9 @@ class LLMClient:
                 "为 openai / openai_compatible,并提供 LLM_VISION_API_KEY / LLM_VISION_BASE_URL。"
             )
 
-        # Vision may use a different API endpoint than the main LLM
-        vision_api_key = settings.llm_vision_api_key or settings.llm_api_key
-        vision_base_url = settings.llm_vision_base_url or settings.llm_base_url
-
-        client = OpenAI(api_key=vision_api_key, base_url=vision_base_url)
-        model = settings.llm_vision_model
+        # 复用实例字段构建 vision 请求
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
+        model = self.model
 
         messages = [
             {

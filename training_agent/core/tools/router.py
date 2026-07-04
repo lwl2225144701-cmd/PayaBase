@@ -12,10 +12,6 @@ This achieves the same goal: LLM decides which knowledge base to use.
 import logging
 from typing import Generator
 
-from sqlalchemy import text
-from sqlalchemy.ext.asyncio import create_async_engine
-
-from core.config import settings
 from core.llm.factory import get_llm_client
 from core.tools.dataset_tool import DatasetTool
 from core.prompts.agent import ROUTER_CLASSIFY_PROMPT, ROUTER_SYSTEM_PROMPT, ROUTER_FALLBACK_PROMPT
@@ -118,23 +114,14 @@ class FunctionCallRouter:
         kb_list = "\n".join([f"- {t_name}: {t.kb_description}" for t_name, t in self.tools.items()])
         prompt = self.CLASSIFY_PROMPT.format(kb_list=kb_list, query=query)
 
-        # 分类场景:走 factory 拿客户端(优先使用 LLM_CLASSIFY_* 配置,未配置时回退 LLM_*)
-        # 兼容历史实现:此处为 ollama 原生 /api/chat,直接读取 profile.base_url
-        from core.llm.factory import get_llm_profile
-        profile = get_llm_profile("classify")
+        # 统一走工厂:业务层不关心 provider / base_url / model
         try:
-            import requests
-            resp = requests.post(
-                f"{profile.base_url}/api/chat",
-                json={
-                    "model": profile.model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "stream": False,
-                },
-                timeout=int(profile.timeout),
-            )
-            result = resp.json()
-            answer = result.get("message", {}).get("content", "").strip()
+            llm = get_llm_client("classify")
+            answer = llm.chat(
+                [{"role": "user", "content": prompt}],
+                stream=False,
+                temperature=0,
+            ).strip()
 
             for t_name in self.tools:
                 if t_name in answer.lower():
