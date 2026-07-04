@@ -185,7 +185,7 @@ def summarize(results: list[RequestResult]) -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Training Agent backend load test")
+    parser = argparse.ArgumentParser(description="PayaBase API backend load test")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--login-code", default="admin")
     parser.add_argument("--scenario", choices=["chat"], default="chat")

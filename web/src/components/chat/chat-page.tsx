@@ -364,7 +364,7 @@ export default function ChatPage() {
       <div className="shrink-0 flex items-center justify-between gap-3 border-b bg-background/40 px-6 py-4">
         <div className="min-w-0">
           <div className="truncate text-base font-semibold text-foreground">{headerTitle}</div>
-          <div className="mt-0.5 text-xs text-muted-foreground">培训助手 · AI</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">PayaBase · AI</div>
         </div>
         <div className="flex items-center gap-2">
           <select
@@ -415,7 +415,7 @@ export default function ChatPage() {
                   {msg.role === "assistant" && (
                     <div className="mb-2 flex items-center justify-between gap-3">
                       <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                        <span className="font-medium text-foreground">培训助手</span>
+                        <span className="font-medium text-foreground">PayaBase</span>
                         <span>AI</span>
                         <span className="opacity-70">·</span>
                         <span className="opacity-70">刚刚</span>

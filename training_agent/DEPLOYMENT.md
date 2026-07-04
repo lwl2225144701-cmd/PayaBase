@@ -1,4 +1,4 @@
-# Training Agent Backend Deployment Guide
+# PayaBase API Deployment Guide
 
 ## 1. 部署目标
 
@@ -87,8 +87,8 @@ server {
 
 至少拆两类服务：
 
-- `training-agent-api.service`
-- `training-agent-worker.service`
+- `payabase-api.service`
+- `payabase-worker.service`
 
 关键点：
 

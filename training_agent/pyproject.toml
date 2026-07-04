@@ -1,7 +1,7 @@
 [project]
-name = "training-agent"
+name = "payabase-api"
 version = "0.1.0"
-description = "Enterprise Training Agent Assistant API"
+description = "PayaBase - Personal AI Knowledge Base Platform API"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",

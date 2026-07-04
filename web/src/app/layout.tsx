@@ -3,8 +3,8 @@ import "./globals.css";
 import { Providers } from "./providers";
 
 export const metadata: Metadata = {
-  title: "培训助手",
-  description: "企业培训知识问答系统",
+  title: "PayaBase",
+  description: "个人 AI 知识库助手",
 };
 
 export default function RootLayout({

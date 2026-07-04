@@ -26,8 +26,8 @@ async def lifespan(app: FastAPI) -> Any:
 
 
 app = FastAPI(
-    title="Training Agent API",
-    description="Enterprise Training Agent Assistant API",
+    title="PayaBase API",
+    description="Personal AI Knowledge Base Platform API",
     version="0.1.0",
     lifespan=lifespan,
 )

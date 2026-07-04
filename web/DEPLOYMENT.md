@@ -1,4 +1,4 @@
-# Training Agent Web Deployment Guide
+# PayaBase Web Deployment Guide
 
 ## 1. 部署目标
 
@@ -96,7 +96,7 @@ location /api/ {
 
 ```bash
 ln -sfn /srv/web/releases/<last_stable> /srv/web/current
-pm2 restart training-agent-web
+pm2 restart payabase-web
 ```
 
 ## 8. 进程管理建议

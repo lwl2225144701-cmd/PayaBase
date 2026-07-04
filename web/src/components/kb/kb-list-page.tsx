@@ -340,7 +340,7 @@ export default function KBListPage() {
                 <div className="pt-5">
                   <CardTitle className="line-clamp-1 text-base">{kb.name}</CardTitle>
                   <CardDescription className="mt-2 line-clamp-2 min-h-[36px] text-xs leading-5">
-                    {kb.description || "企业培训知识资料沉淀、检索与问答"}
+                    {kb.description || "个人知识资料沉淀、检索与问答"}
                   </CardDescription>
                 </div>
               </CardHeader>

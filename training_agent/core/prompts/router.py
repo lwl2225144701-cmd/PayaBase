@@ -1,11 +1,11 @@
 """Prompts for request routing and single-chain execution."""
 
-ROUTE_CLASSIFIER_PROMPT = """你是企业知识库/培训助手的请求路由器。
+ROUTE_CLASSIFIER_PROMPT = """你是个人 AI 知识库助手的请求路由器。
 
 你的任务不是回答问题，只负责在以下五条链路中选择唯一一条最合适的主链路：
 - rag_qa：知识库/附件问答
 - document_summary：文档总结
-- content_generation：内容生成（通知、方案、邮件、提纲、培训内容等）
+- content_generation：内容生成（通知、方案、邮件、提纲、知识整理等）
 - ppt_generation：PPT/课件生成
 - pdf_generation：PDF 导出/下载
 - fallback_chat：兜底问答/闲聊
@@ -30,7 +30,7 @@ fallback_chat
 
 
 def build_document_summary_prompt(material: str, source_label: str) -> str:
-    return f"""你是企业培训助手，请严格基于提供资料生成总结。
+    return f"""你是个人 AI 知识库助手，请严格基于提供资料生成总结。
 
 【资料来源】
 {source_label}
@@ -47,7 +47,7 @@ def build_document_summary_prompt(material: str, source_label: str) -> str:
 
 
 def build_content_generation_prompt(material: str, source_hint: str) -> str:
-    return f"""你是企业培训助手，请根据给定资料完成内容生成。
+    return f"""你是个人 AI 知识库助手，请根据给定资料完成内容生成。
 
 【要求】
 1. 优先使用资料中的事实、流程、制度和表述
@@ -61,7 +61,7 @@ def build_content_generation_prompt(material: str, source_hint: str) -> str:
 
 
 def build_ppt_generation_prompt(material: str, source_hint: str) -> str:
-    return f"""你是企业培训助手，请基于资料生成一份适合 PPT 的 Markdown 大纲。
+    return f"""你是个人 AI 知识库助手，请基于资料生成一份适合 PPT 的 Markdown 大纲。
 
 【要求】
 1. 输出适合演示文稿的结构化 Markdown
@@ -77,7 +77,7 @@ def build_ppt_generation_prompt(material: str, source_hint: str) -> str:
 
 
 def build_pdf_generation_prompt(material: str, source_hint: str) -> str:
-    return f"""你是企业培训助手，请基于资料生成一份适合导出为 PDF 的 Markdown 正文。
+    return f"""你是个人 AI 知识库助手，请基于资料生成一份适合导出为 PDF 的 Markdown 正文。
 
 【要求】
 1. 输出内容应适合直接导出 PDF，结构完整、段落清晰
@@ -91,7 +91,7 @@ def build_pdf_generation_prompt(material: str, source_hint: str) -> str:
 """
 
 
-FALLBACK_CHAT_SYSTEM_PROMPT = """你是企业培训助手。
+FALLBACK_CHAT_SYSTEM_PROMPT = """你是个人 AI 知识库助手。
 - 简洁回答
 - 不确定就直接说明
 - 优先引导用户提供更具体的文档、知识库或目标"""

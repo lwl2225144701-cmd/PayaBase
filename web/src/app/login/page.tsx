@@ -58,18 +58,18 @@ export default function LoginPage() {
               <Bot className="h-5 w-5 text-primary" />
             </div>
             <div className="leading-tight">
-              <div className="text-sm font-semibold">培训助手</div>
-              <div className="mt-0.5 text-xs text-muted-foreground">AI 辅助培训知识问答</div>
+              <div className="text-sm font-semibold">PayaBase</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">AI 知识库问答助手</div>
             </div>
           </div>
 
           <h1 className="mt-8 text-4xl font-semibold leading-tight tracking-tight text-foreground">
-            让培训更高效
+            让知识更易检索
             <br />
-            让知识更有价值
+            让学习更有价值
           </h1>
           <p className="mt-4 max-w-md text-sm leading-relaxed text-muted-foreground">
-            基于大模型的企业培训知识问答与学习平台
+            基于大模型的个人 AI 知识库问答与管理平台
           </p>
 
           <div className="mt-10 space-y-5">
@@ -110,7 +110,7 @@ export default function LoginPage() {
           <Card className="w-full max-w-md border border-white/40 bg-white/75 backdrop-blur supports-[backdrop-filter]:bg-white/60 shadow-[0_24px_70px_rgba(15,23,42,0.12)]">
             <CardHeader className="text-center pb-3">
               <CardTitle className="text-2xl">欢迎回来</CardTitle>
-              <CardDescription>登录你的培训助手账号</CardDescription>
+              <CardDescription>登录你的 PayaBase 账号</CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="relative">
@@ -163,7 +163,7 @@ export default function LoginPage() {
         </div>
 
         <div className="md:col-span-2 pt-10 text-center text-xs text-muted-foreground/80">
-          © 2024 培训助手 AI. All rights reserved.
+          © 2024 PayaBase. All rights reserved.
         </div>
       </div>
     </div>

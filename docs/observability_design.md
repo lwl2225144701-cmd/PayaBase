@@ -79,7 +79,7 @@
     "level": "INFO",
     "trace_id": "abc123",
     "span_id": "span_456",
-    "service": "training-agent-api",
+    "service": "payabase-api",
     "environment": "production",
     "version": "0.1.0",
     "module": "api.routers.chat",

@@ -33,8 +33,8 @@ export default function DashboardLayout({ children }: DashboardLayoutProps) {
             <div className="flex items-center gap-2">
               <div className="h-8 w-8 rounded-md bg-[linear-gradient(135deg,rgba(37,99,235,1),rgba(147,51,234,1))]" />
               <div className="leading-tight">
-                <div className="text-[15px] font-semibold">培训助手</div>
-                <div className="text-xs text-muted-foreground">企业培训与知识问答</div>
+                <div className="text-[15px] font-semibold">PayaBase</div>
+                <div className="text-xs text-muted-foreground">个人 AI 知识库助手</div>
               </div>
             </div>
           </div>

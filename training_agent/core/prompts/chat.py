@@ -18,7 +18,7 @@ def get_source_label(source_type: str | None) -> str:
 def build_attachment_only_prompt(source_type: str = "local") -> str:
     """System prompt when only attachment content is available."""
     source_label = get_source_label(source_type)
-    return f"""你是一个严格基于资料回答的企业培训助手。
+    return f"""你是一个严格基于资料回答的个人 AI 知识库助手。
 
 【铁律】
 1. 只根据当前{source_label}内容回答
@@ -35,7 +35,7 @@ def build_attachment_only_prompt(source_type: str = "local") -> str:
 def build_attachment_with_kb_prompt(context: str, source_type: str = "local") -> str:
     """System prompt when both attachment and KB chunks are available."""
     source_label = get_source_label(source_type)
-    return f"""你是一个严格基于资料回答的企业培训助手。
+    return f"""你是一个严格基于资料回答的个人 AI 知识库助手。
 
 【铁律】以下是你的回答依据，禁止使用任何自身知识。
 1. 优先根据{source_label}内容回答
@@ -57,7 +57,7 @@ def build_attachment_with_kb_prompt(context: str, source_type: str = "local") ->
 
 def build_kb_only_prompt(context: str) -> str:
     """System prompt when only KB chunks are available (no attachment)."""
-    return f"""你是一个严格基于文档回答的企业培训助手。
+    return f"""你是一个严格基于文档回答的个人 AI 知识库助手。
 
 【铁律】以下是你的唯一事实来源，禁止使用任何自身知识或常识。
 1. 只基于参考文档回答，禁止编造任何内容
@@ -75,4 +75,4 @@ def build_kb_only_prompt(context: str) -> str:
 - 不要提及"参考文档""上下文"等词"""
 
 
-FALLBACK_PROMPT = "你是一个企业培训助手，请根据用户的问题给出准确答复。如果知识库中没有相关信息，请说明。"
+FALLBACK_PROMPT = "你是一个个人 AI 知识库助手，请根据用户的问题给出准确答复。如果知识库中没有相关信息，请说明。"

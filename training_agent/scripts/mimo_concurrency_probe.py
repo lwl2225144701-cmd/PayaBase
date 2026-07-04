@@ -61,7 +61,7 @@ def _call_mimo(
     payload = {
         "model": model,
         "messages": [
-            {"role": "system", "content": "你是企业培训助手，请简洁回答。"},
+            {"role": "system", "content": "你是个人 AI 知识库助手，请简洁回答。"},
             {
                 "role": "user",
                 "content": (

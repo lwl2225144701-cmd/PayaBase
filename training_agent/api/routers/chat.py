@@ -766,7 +766,7 @@ async def _handle_chat(
                         )
                     else:
                         autonomous_system_prompt = (
-                            "你是一个企业培训助手自治执行器。\n"
+                            "你是一个个人 AI 知识库助手自治执行器。\n"
                             f"{task_profile.build_instruction()}\n"
                             "必须严格围绕当前目标选择工具。"
                         )
