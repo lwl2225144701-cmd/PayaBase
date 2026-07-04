@@ -96,7 +96,9 @@ def get_llm_profile(purpose: str = PURPOSE_DEFAULT) -> LLMProfile:
             provider=provider,
             api_key=s.llm_vision_api_key or s.llm_api_key,
             base_url=s.llm_vision_base_url or s.llm_base_url,
-            model=s.llm_vision_model or s.llm_model,
+            # Vision 模型必须显式配置,不 fallback 到 LLM_MODEL,
+            # 避免普通文本模型被误用于图片识别。
+            model=s.llm_vision_model,
             timeout=float(s.llm_vision_timeout or s.llm_default_timeout),
         )
 

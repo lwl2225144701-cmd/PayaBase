@@ -38,6 +38,22 @@ def _normalize_provider(provider: Optional[str], base_url: Optional[str], fallba
     return fallback or PROVIDER_OPENAI
 
 
+def _normalize_api_header_prefix(prefix: Optional[str]) -> str:
+    """规范化 API Header 前缀,避免拼接错误。
+
+    规则:
+      - None / 空字符串: 返回 ""
+      - "Bearer"(无空格): 返回 "Bearer "(补空格,符合 HTTP Auth 规范)
+      - "Bearer "(已有空格): 保持原值
+      - 其他值: 保持原值(部分网关可能需要自定义格式,不强制加空格)
+    """
+    if not prefix:
+        return ""
+    if prefix == "Bearer":
+        return "Bearer "
+    return prefix
+
+
 class LLMClient:
     """LLM calling client."""
 
@@ -65,7 +81,9 @@ class LLMClient:
         self.api_key = api_key or settings.llm_api_key
         self.timeout = timeout
         self.api_header_name = (api_header_name or "").strip()
-        self.api_header_prefix = "Bearer " if api_header_prefix is None else api_header_prefix
+        self.api_header_prefix = _normalize_api_header_prefix(
+            api_header_prefix if api_header_prefix is not None else "Bearer"
+        )
 
         # Determine provider: explicit > auto-detect > global setting
         self.provider = _normalize_provider(provider, base_url, settings.llm_provider)
@@ -335,9 +353,7 @@ class LLMClient:
     def _openai_rest_headers(self) -> dict[str, str]:
         headers = {"Content-Type": "application/json"}
         if self.api_header_name:
-            value = self.api_key
-            if self.api_header_prefix:
-                value = f"{self.api_header_prefix}{self.api_key}"
+            value = f"{self.api_header_prefix}{self.api_key}"
             headers[self.api_header_name] = value
         else:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -417,11 +433,17 @@ class LLMClient:
 
 
 class QwenClient(LLMClient):
-    """Qwen LLM client."""
+    """Qwen LLM client.
+
+    legacy compatibility wrapper.
+    业务代码应优先使用 get_llm_client('chat') 配合 LLM_CHAT_* 配置。
+    如果已经迁走调用方,可以安全移除本类。
+    """
 
     def __init__(self):
         """Initialize Qwen client."""
         super().__init__(
+            provider=PROVIDER_OPENAI,
             base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
             model="qwen-plus",
         )

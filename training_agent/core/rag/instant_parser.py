@@ -10,7 +10,6 @@ import logging
 from pathlib import Path
 
 from core.exceptions import ValidationException
-from core.config import settings
 from core.prompts.vision import VISION_PROMPT
 
 logger = logging.getLogger(__name__)
@@ -121,14 +120,14 @@ class InstantFileParser:
         b64 = base64.b64encode(content).decode("utf-8")
         mime = f"image/{'jpeg' if ext == 'jpg' else ext}"
 
-        llm = get_llm_client("vision")
         try:
+            llm = get_llm_client("vision")
             result = llm.chat_with_image(b64, VISION_PROMPT, mime_type=mime)
             if page > 0:
                 return f"[第{page}页-图片{idx}]\n{result}"
             return result
         except RuntimeError as e:
-            # Vision not configured — graceful skip
+            # Vision not configured or client init failed — graceful skip
             logger.info(f"[InstantParser] Vision unavailable: {e}")
             return None
         except Exception as e:
