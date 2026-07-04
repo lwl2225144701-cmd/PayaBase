@@ -114,6 +114,7 @@ def process_kb_miss(
     all_attachments: list,
     web_search_mode: str,
     conv_meta: dict,
+    pending_query: str = "",
 ) -> str:
     """Handle knowledge base miss logic for web_search_mode transitions.
 
@@ -140,8 +141,9 @@ def process_kb_miss(
         web_search_mode = "ask_pending"
         conv_meta["web_search_mode"] = "ask_pending"
         conv_meta["kb_miss_count"] = miss_count
-        conv_meta["pending_ask_query"] = conv_meta.get("pending_ask_query") or ""
-        logger.info(f"[WebSearch] KB miss #{miss_count}, 设置 ask_pending")
+        # 记录触发 ask_pending 时的用户问题，便于上下文恢复
+        conv_meta["pending_ask_query"] = pending_query or conv_meta.get("pending_ask_query") or ""
+        logger.info(f"[WebSearch] KB miss #{miss_count}, 设置 ask_pending, pending_query_len={len(conv_meta['pending_ask_query'])}")
 
     return web_search_mode
 

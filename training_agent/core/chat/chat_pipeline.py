@@ -45,7 +45,7 @@ from core.prompts.router import (
 )
 from core.prompts.agent import build_step_execution_prompt, SOLUTION_AGENT_PROMPT
 from core.chat.stream_events import stream_llm_response, format_sse_chunk
-from core.chat.attachment_service import parse_attachments, ALLOWED_ATTACHMENT_TYPES
+from core.chat.attachment_service import parse_attachments
 from core.chat.conversation_service import (
     validate_conversation,
     save_user_message,
@@ -56,7 +56,6 @@ from core.chat.web_search_state import (
     process_web_search_explicit_keyword,
     handle_ask_pending_response,
     process_kb_miss,
-    classify_yes_no,
 )
 from core.chat.chat_context import build_context_from_chunks, build_material_text
 from models.tables import KnowledgeBase, AgentRun, AgentStep
@@ -357,11 +356,12 @@ async def handle_chat(
             # web_search_mode is a local variable now, no need for nonlocal
             if active_kb_id and not chunks_data and not all_attachments:
                 web_search_mode_local = process_kb_miss(
-                    active_kb_id=True,
-                    chunks_data=[],
-                    all_attachments=[],
+                    active_kb_id=bool(active_kb_id),
+                    chunks_data=chunks_data,
+                    all_attachments=all_attachments,
                     web_search_mode=web_search_mode,
                     conv_meta=conv_meta,
+                    pending_query=message,
                 )
                 if web_search_mode_local != web_search_mode:
                     web_search_mode = web_search_mode_local
@@ -467,7 +467,7 @@ async def handle_chat(
                         if registry_tool:
                             artifact_result_raw = registry_tool.invoke(
                                 content=full_content,
-                                title=conv.title or "培训方案",
+                                title=conv.title or "知识整理",
                             )
                             agent_step_state.tool_trace.append(
                                 {
@@ -523,7 +523,7 @@ async def handle_chat(
 
                     ppt_tool = PPTGenerationTool(tenant_id=current_user.tenant_id)
                     task_payload = json.loads(
-                        ppt_tool.invoke(content=full_content, title=conv.title or "培训方案")
+                        ppt_tool.invoke(content=full_content, title=conv.title or "知识整理")
                     )
                     if task_payload.get("task_id"):
                         artifact = {"type": "ppt", "task_id": task_payload["task_id"]}
@@ -569,7 +569,7 @@ async def handle_chat(
 
                     pdf_tool = PDFExportTool(tenant_id=current_user.tenant_id)
                     task_payload = json.loads(
-                        pdf_tool.invoke(content=full_content, title=conv.title or "培训方案")
+                        pdf_tool.invoke(content=full_content, title=conv.title or "知识整理")
                     )
                     if task_payload.get("task_id"):
                         artifact = {"type": "pdf", "task_id": task_payload["task_id"]}

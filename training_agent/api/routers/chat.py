@@ -7,7 +7,7 @@ import uuid
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
+from fastapi import APIRouter, UploadFile, File, Form
 from fastapi.responses import JSONResponse
 
 from api.deps import DBSession, CurrentUser
