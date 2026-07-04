@@ -12,7 +12,7 @@ import logging
 from datetime import datetime
 
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select, update
+from sqlalchemy import select
 
 from api.deps import DBSession, CurrentUser
 from api.schemas.chat import ChatStreamChunk
@@ -59,7 +59,14 @@ from core.chat.web_search_state import (
 from core.chat.chat_context import build_context_from_chunks, build_material_text
 from core.chat.chat_state import ChatRuntimeState
 from core.llm.factory import get_llm_client
-from models.tables import KnowledgeBase, AgentRun, AgentStep
+from core.agent.persistence import (
+    AgentPersistenceIds,
+    persist_initial_agent_run,
+    persist_agent_step_result,
+    update_main_step_output,
+    persist_finalize_step,
+)
+from models.tables import KnowledgeBase
 
 logger = logging.getLogger(__name__)
 
@@ -224,48 +231,15 @@ async def handle_chat(
                 else {"step_id": "step-1", "step_type": route_decision.route, "step_goal": f"execute_{route_decision.route}"}
             )
             agent_step_state = orchestrator.runner.start_step(agent_run_state, first_step)
-            agent_run_db_id: uuid.UUID | None = None
-            agent_step_db_id: uuid.UUID | None = None
-            agent_finalize_step_db_id: uuid.UUID | None = None
-            try:
-                run_row = AgentRun(
-                    tenant_id=uuid.UUID(current_user.tenant_id),
-                    user_id=uuid.UUID(current_user.id),
-                    conversation_id=conv.id,
-                    goal=agent_run_state.goal,
-                    status=agent_run_state.status,
-                    route=route_decision.route,
-                    current_step=agent_run_state.current_step,
-                    next_step=agent_run_state.next_step,
-                    completed_steps_summary=agent_run_state.completed_steps_summary,
-                    plan_snapshot=agent_run_state.plan_snapshot,
-                    step_history=agent_run_state.step_history,
-                    artifacts=agent_run_state.artifacts,
-                    last_error=agent_run_state.last_error or None,
-                    retry_count=agent_run_state.retry_count,
-                    budget_remaining=agent_run_state.budget_remaining,
-                )
-                db.add(run_row)
-                await db.flush()
-                agent_run_db_id = run_row.id
-
-                step_row = AgentStep(
-                    run_id=run_row.id,
-                    step_key=agent_step_state.step_id,
-                    step_type=agent_step_state.step_type,
-                    step_goal=agent_step_state.step_goal,
-                    status=agent_step_state.status,
-                    output=agent_step_state.output,
-                    error=agent_step_state.error,
-                    tool_trace=agent_step_state.tool_trace,
-                )
-                db.add(step_row)
-                await db.flush()
-                agent_step_db_id = step_row.id
-                await db.commit()
-            except Exception as e:
-                logger.warning(f"[Agent] 持久化初始化状态失败(非致命): {e}")
-                await db.rollback()
+            persistence_ids = await persist_initial_agent_run(
+                db=db,
+                tenant_id=current_user.tenant_id,
+                user_id=current_user.id,
+                conversation_id=conv.id,
+                route=route_decision.route,
+                agent_run_state=agent_run_state,
+                agent_step_state=agent_step_state,
+            )
             timings["routing_ms"] = int((time.time() - t0) * 1000)
             logger.info(
                 f"[Timing] 路由决策完成: {timings['routing_ms']}ms, "
@@ -292,7 +266,6 @@ async def handle_chat(
             )
 
             chunks_data = state.chunks_data
-            retrieval_ms = 0
             timings["embedding_ms"] = 0
             timings["retrieval_ms"] = 0
 
@@ -638,38 +611,12 @@ async def handle_chat(
                 agent_tool_trace.append({"type": "error", "error_type": step_error_type, "message": agent_step_state.error[:1000]})
                 agent_run_state.last_error = f"{step_error_type}:{agent_step_state.error[:1000]}"
             agent_step_state.tool_trace = agent_tool_trace
-            if agent_run_db_id and agent_step_db_id:
-                try:
-                    await db.execute(
-                        update(AgentStep)
-                        .where(AgentStep.id == agent_step_db_id)
-                        .values(
-                            status=agent_step_state.status,
-                            output=agent_step_state.output,
-                            error=agent_step_state.error,
-                            tool_trace=agent_step_state.tool_trace,
-                        )
-                    )
-                    await db.execute(
-                        update(AgentRun)
-                        .where(AgentRun.id == agent_run_db_id)
-                        .values(
-                            status=agent_run_state.status,
-                            current_step=agent_run_state.current_step,
-                            next_step=agent_run_state.next_step,
-                            completed_steps_summary=agent_run_state.completed_steps_summary,
-                            step_history=agent_run_state.step_history,
-                            artifacts=agent_run_state.artifacts,
-                            last_error=agent_run_state.last_error or None,
-                            retry_count=agent_run_state.retry_count,
-                            budget_remaining=agent_run_state.budget_remaining,
-                            completed_at=datetime.utcnow() if agent_run_state.status in {"completed", "failed", "stopped"} else None,
-                        )
-                    )
-                    await db.commit()
-                except Exception as e:
-                    logger.warning(f"[Agent] 持久化结束状态失败(非致命): {e}")
-                    await db.rollback()
+            await persist_agent_step_result(
+                db=db,
+                ids=persistence_ids,
+                agent_run_state=agent_run_state,
+                agent_step_state=agent_step_state,
+            )
 
             # Dynamic follow-up step
             followup_step_def = orchestrator.planner.build_followup_step(
@@ -762,17 +709,11 @@ async def handle_chat(
                             tool_trace=finalize_trace + [{"type": "artifacts", "items": artifacts}],
                         )
                         finalize_already_completed = True
-                        if agent_step_db_id:
-                            try:
-                                await db.execute(
-                                    update(AgentStep)
-                                    .where(AgentStep.id == agent_step_db_id)
-                                    .values(output=full_content)
-                                )
-                                await db.commit()
-                            except Exception as e:
-                                logger.warning(f"[Agent] 更新重试后主输出失败(非致命): {e}")
-                                await db.rollback()
+                        await update_main_step_output(
+                            db=db,
+                            step_db_id=persistence_ids.step_db_id,
+                            output=full_content,
+                        )
                 if followup_step_def.get("step_type") == "fallback_finalize":
                     finalize_output = "fallback_finalize_completed"
                     finalize_trace.append({"type": "fallback", "message": "reroute_to_safe_fallback_response"})
@@ -783,48 +724,18 @@ async def handle_chat(
                         output=finalize_output,
                         tool_trace=finalize_trace + [{"type": "artifacts", "items": artifacts}],
                     )
-                if agent_run_db_id:
-                    try:
-                        if finalize_step_state is not None:
-                            finalize_row = AgentStep(
-                                run_id=agent_run_db_id,
-                                step_key=finalize_step_state.step_id,
-                                step_type=finalize_step_state.step_type,
-                                step_goal=finalize_step_state.step_goal,
-                                status=finalize_step_state.status,
-                                output=finalize_step_state.output,
-                                error=finalize_step_state.error,
-                                tool_trace=finalize_step_state.tool_trace,
-                            )
-                            db.add(finalize_row)
-                            await db.flush()
-                            agent_finalize_step_db_id = finalize_row.id
-                        await db.execute(
-                            update(AgentRun)
-                            .where(AgentRun.id == agent_run_db_id)
-                            .values(
-                                status=agent_run_state.status,
-                                current_step=agent_run_state.current_step,
-                                next_step=agent_run_state.next_step,
-                                completed_steps_summary=agent_run_state.completed_steps_summary,
-                                step_history=agent_run_state.step_history,
-                                artifacts=agent_run_state.artifacts,
-                                last_error=agent_run_state.last_error or None,
-                                retry_count=agent_run_state.retry_count,
-                                budget_remaining=agent_run_state.budget_remaining,
-                                completed_at=datetime.utcnow() if agent_run_state.status in {"completed", "failed", "stopped"} else None,
-                            )
-                        )
-                        await db.commit()
-                    except Exception as e:
-                        logger.warning(f"[Agent] 持久化finalize步骤失败(非致命): {e}")
-                        await db.rollback()
+                persistence_ids = await persist_finalize_step(
+                    db=db,
+                    ids=persistence_ids,
+                    agent_run_state=agent_run_state,
+                    finalize_step_state=finalize_step_state,
+                )
 
             latency_ms = int((time.time() - t_total) * 1000)
             timings["total_ms"] = latency_ms
             logger.info(
                 f"[Timing] 总耗时: {latency_ms}ms, "
-                f"routing={route_decision.route}, retrieval_ms={retrieval_ms}, "
+                f"routing={route_decision.route}, retrieval_ms={timings.get('retrieval_ms', 0)}, "
                 f"attachments={len(all_attachments)}, citations={len(citations_list)}"
             )
 
@@ -839,7 +750,7 @@ async def handle_chat(
                     "confidence": route_decision.confidence,
                     "agent": {
                         "run_id": agent_run_state.run_id,
-                        "run_db_id": str(agent_run_db_id) if agent_run_db_id else None,
+                        "run_db_id": str(persistence_ids.run_db_id) if persistence_ids.run_db_id else None,
                         "status": agent_run_state.status,
                         "current_step": agent_run_state.current_step,
                         "next_step": agent_run_state.next_step,
@@ -855,7 +766,7 @@ async def handle_chat(
 
             yield format_sse_chunk(content="", citations=[], finished=False, attachment_used=state.attachment_used, agent={
                 "run_id": agent_run_state.run_id,
-                "run_db_id": str(agent_run_db_id) if agent_run_db_id else None,
+                "run_db_id": str(persistence_ids.run_db_id) if persistence_ids.run_db_id else None,
                 "status": agent_run_state.status,
                 "current_step": agent_run_state.current_step,
                 "next_step": agent_run_state.next_step,
