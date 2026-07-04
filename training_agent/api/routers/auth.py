@@ -25,8 +25,8 @@ async def sso_login(
     code: str,
     db: DBSession,
 ):
-    # TODO: Implement actual SSO authentication with HR API
-    # This is a placeholder implementation
+    # TODO: Replace with real SSO / OAuth integration
+    # This is a dev login placeholder
     code = code.strip()
     if not code:
         raise ValidationException("code 不能为空")
@@ -35,7 +35,6 @@ async def sso_login(
     user = result.scalar_one_or_none()
 
     if not user:
-        # Create or sync user from HR API (placeholder)
         result = await db.execute(select(Tenant).limit(1))
         tenant = result.scalar_one_or_none()
         if not tenant:
@@ -44,6 +43,7 @@ async def sso_login(
             await db.commit()
             await db.refresh(tenant)
 
+        # Dev logic: code="admin" → admin, code="training_admin" → training_admin, others → user
         role = (
             "admin"
             if code == "admin"
@@ -52,17 +52,12 @@ async def sso_login(
             else "user"
         )
         department_id = None
-        if role == "training_admin":
-            dept = await db.scalar(
-                select(Department).where(Department.tenant_id == tenant.id).limit(1)
-            )
-            department_id = dept.id if dept else None
 
         user = User(
             tenant_id=tenant.id,
             department_id=department_id,
             name=f"User_{code}",
-            email=f"{code}@training.local",
+            email=f"{code}@payabase.local",
             sso_id=code,
             role=role,
         )

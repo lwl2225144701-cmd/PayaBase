@@ -48,9 +48,12 @@ async def get_current_user(
     return user
 
 
+from core.permissions import SUPER_ADMIN_ROLE, ADMIN_ROLE
+
+
 def require_admin(user: User) -> None:
     """检查是否为管理员"""
-    if user.role not in ("admin", "training_admin"):
+    if user.role not in (SUPER_ADMIN_ROLE, ADMIN_ROLE):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="仅管理员可访问",

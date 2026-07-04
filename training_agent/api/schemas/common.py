@@ -34,7 +34,8 @@ class UserInfo(BaseModel):
     email: str
     role: str = "user"
     is_super_admin: bool = False
-    is_training_admin: bool = False
+    is_admin: bool = False
+    is_training_admin: bool = False  # 向后兼容
     can_manage_knowledge_bases: bool = False
 
 

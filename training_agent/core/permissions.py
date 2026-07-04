@@ -11,7 +11,7 @@ from models.tables import KnowledgeBase
 
 
 SUPER_ADMIN_ROLE = "admin"
-TRAINING_ADMIN_ROLE = "training_admin"
+ADMIN_ROLE = "training_admin"  # DB 中仍存储为 training_admin,代码层语义已变为 admin
 USER_ROLE = "user"
 
 
@@ -23,20 +23,24 @@ def is_super_admin(user: UserInfo) -> bool:
     return user.role == SUPER_ADMIN_ROLE
 
 
-def is_training_admin(user: UserInfo) -> bool:
-    return user.role == TRAINING_ADMIN_ROLE
+def is_admin(user: UserInfo) -> bool:
+    """检查用户是否为管理员(兼容 DB 中的 training_admin 值)"""
+    return user.role == ADMIN_ROLE
+
+
+# 向后兼容:旧代码仍可通过 is_training_admin() 调用
+is_training_admin = is_admin
 
 
 def can_manage_knowledge_bases(user: UserInfo) -> bool:
-    return is_super_admin(user) or is_training_admin(user)
+    return is_super_admin(user) or is_admin(user)
 
 
 def can_manage_kb(user: UserInfo, kb: KnowledgeBase) -> bool:
-    if is_super_admin(user):
-        return str(kb.tenant_id) == user.tenant_id
-    if not is_training_admin(user) or not user.department_id:
+    """admin / training_admin 都可以管理当前 tenant 下知识库，不再依赖 department_id"""
+    if not is_super_admin(user) and not is_admin(user):
         return False
-    return str(kb.tenant_id) == user.tenant_id and str(kb.department_id) == user.department_id
+    return str(kb.tenant_id) == user.tenant_id
 
 
 def knowledge_base_visibility_filter(user: UserInfo) -> ColumnElement[bool]:

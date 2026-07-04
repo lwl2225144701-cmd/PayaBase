@@ -91,12 +91,15 @@ async def create_knowledge_base(
     if not can_manage_knowledge_bases(current_user):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="仅知识库管理员可创建知识库",
+            detail="无权限创建知识库",
         )
 
-    if is_super_admin(current_user):
-        department_id = uuid.UUID(data.department_id) if data.department_id else None
-        if department_id:
+    # department_id 可选:超管可指定,其他管理员默认为当前用户的部门
+    department_id = None
+    if data.department_id:
+        if is_super_admin(current_user):
+            department_id = uuid.UUID(data.department_id)
+            # 验证部门存在(仅超管可跨部门)
             dept = await db.scalar(
                 select(Department).where(
                     Department.id == department_id,
@@ -108,18 +111,9 @@ async def create_knowledge_base(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="部门不存在",
                 )
-    else:
-        if not current_user.department_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="当前培训管理员未绑定部门",
-            )
-        if data.department_id and data.department_id != current_user.department_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="培训管理员只能创建本部门知识库",
-            )
-        department_id = uuid.UUID(current_user.department_id)
+        else:
+            # 非超管管理员,department_id 只能和当前用户一致
+            department_id = uuid.UUID(current_user.department_id) if current_user.department_id else None
 
     kb = KnowledgeBase(
         tenant_id=uuid.UUID(current_user.tenant_id),

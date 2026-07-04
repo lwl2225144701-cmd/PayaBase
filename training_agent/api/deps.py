@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from core.config import settings
-from core.permissions import can_manage_knowledge_bases, is_super_admin, is_training_admin
+from core.permissions import can_manage_knowledge_bases, is_super_admin, is_admin
 from models.db import get_db
 from models.tables import User
 from api.schemas.common import TokenPayload, UserInfo
@@ -59,7 +59,8 @@ async def get_current_user(
         email=user.email,
         role=user.role,
         is_super_admin=is_super_admin(user),
-        is_training_admin=is_training_admin(user),
+        is_admin=is_admin(user) or is_super_admin(user),
+        is_training_admin=is_admin(user),  # 字段名保持兼容
         can_manage_knowledge_bases=can_manage_knowledge_bases(user),
     )
 

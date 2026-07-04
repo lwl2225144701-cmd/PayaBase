@@ -16,7 +16,7 @@ from api.deps import DBSession, CurrentUser
 from api.schemas.common import Response
 from api.schemas.stats import UsageStats, QueryStat, TrendPoint, AgentMetrics, AgentTrendPoint, SearchMetrics, SearchTrendPoint
 from core.config import settings
-from core.permissions import is_super_admin, is_training_admin, knowledge_base_visibility_filter
+from core.permissions import is_super_admin, is_admin, knowledge_base_visibility_filter
 from models.tables import Conversation, Message, KnowledgeBase, AgentRun, AgentStep
 
 router = APIRouter()
@@ -31,7 +31,7 @@ def _conversation_scope_filter(current_user: CurrentUser):
     tenant_id = uuid.UUID(current_user.tenant_id)
     if is_super_admin(current_user):
         return Conversation.tenant_id == tenant_id
-    if is_training_admin(current_user):
+    if is_admin(current_user):
         visible_kb_ids = select(KnowledgeBase.id).where(
             knowledge_base_visibility_filter(current_user)
         )
