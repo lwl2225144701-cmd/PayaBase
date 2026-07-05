@@ -17,7 +17,7 @@
 """
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from core.chat.conversation_service import save_assistant_message

@@ -20,7 +20,6 @@ import json
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any
 
 from core.tools.ppt_tool import PPTGenerationTool
 from core.tools.pdf_export_tool import PDFExportTool

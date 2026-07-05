@@ -5,7 +5,6 @@ api/routers/chat.py to reduce cyclomatic complexity in the router layer.
 """
 
 import uuid
-import json
 import time
 import asyncio
 import logging
