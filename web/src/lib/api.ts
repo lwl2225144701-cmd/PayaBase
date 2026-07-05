@@ -205,14 +205,38 @@ class ApiClient {
     if (params.sort) query.set("sort", params.sort);
     const res = await this.request<{
       code: number;
-      data: {
-        items: any[];
-        total: number;
-        page: number;
-        page_size: number;
-        counts?: { all: number; ready: number; indexing: number; error: number };
-      };
+      data:
+        | {
+            items: any[];
+            total: number;
+            page: number;
+            page_size: number;
+            counts?: { all: number; ready: number; indexing: number; error: number };
+          }
+        // 兼容: 老 service 没重启时, with_total=true 被忽略, 后端只返 { code, data: items[] }
+        | any[];
+      msg: string;
     }>(`/api/kb/${kbId}/docs?${query.toString()}`);
+
+    // 兼容老 service 响应: 拿到数组就当成 items 包装
+    if (Array.isArray(res.data)) {
+      const items = res.data;
+      const counts = {
+        all: items.length,
+        ready: items.filter((d: any) => d.status === "ready").length,
+        indexing: items.filter((d: any) => d.status === "indexing" || d.status === "pending").length,
+        error: items.filter((d: any) => d.status === "error").length,
+      };
+      return {
+        items,
+        total: items.length,
+        page: params.page,
+        page_size: params.pageSize,
+        counts,
+      };
+    }
+
+    // 新 service 标准响应
     return res.data;
   }
 
