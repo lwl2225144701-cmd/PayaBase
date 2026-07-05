@@ -556,7 +556,7 @@ export default function KBListPage() {
                           </p>
                         )}
                       </div>
-                      <div className="flex shrink-0 items-center gap-2 border-l pl-3 pr-3">
+                      <div className="flex shrink-0 items-center gap-2 border-l border-border/80 pl-3 pr-3">
                         <div className="hidden items-center gap-2 lg:flex">
                           <span className="rounded-md bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground">
                             {kb.doc_count || 0} 个文档
