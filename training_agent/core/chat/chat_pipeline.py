@@ -28,15 +28,7 @@ from core.tools.solution_tool import SolutionGeneratorTool
 from core.tools.web_search_tool import WebSearchTool
 from core.tools.ppt_tool import PPTGenerationTool
 from core.tools.pdf_export_tool import PDFExportTool
-from core.prompts.chat import (
-    build_attachment_only_prompt,
-    build_attachment_with_kb_prompt,
-    build_kb_only_prompt,
-    FALLBACK_PROMPT,
-)
 from core.prompts.router import (
-    build_content_generation_prompt,
-    build_document_summary_prompt,
     FALLBACK_CHAT_SYSTEM_PROMPT,
 )
 from core.prompts.agent import build_step_execution_prompt, SOLUTION_AGENT_PROMPT
@@ -53,7 +45,7 @@ from core.chat.web_search_state import (
     handle_ask_pending_response,
     process_kb_miss,
 )
-from core.chat.chat_context import build_context_from_chunks, build_material_text
+from core.chat.chat_context import build_material_text
 from core.chat.chat_state import ChatRuntimeState
 from core.llm.factory import get_llm_client
 from core.agent.persistence import (
@@ -66,6 +58,12 @@ from core.chat.artifact_flow import (
     ArtifactStepContext,
     ArtifactGenerationRequest,
     generate_route_artifact,
+)
+from core.chat.answer_flow import (
+    AnswerStepContext,
+    AnswerGenerationRequest,
+    AnswerStreamState,
+    stream_answer_chunks,
 )
 from models.tables import KnowledgeBase
 
@@ -471,51 +469,40 @@ async def handle_chat(
                             pdf_task_id=artifact["task_id"] if artifact["type"] == "pdf" else None,
                         )
                 else:
-                    if route_decision.route == "document_summary":
-                        system_prompt = build_document_summary_prompt(material_text or user_message_text, source_hint)
-                    elif route_decision.route == "content_generation":
-                        system_prompt = build_content_generation_prompt(material_text or user_message_text, source_hint)
-                    elif route_decision.route == "rag_qa":
-                        if all_attachments and chunks_data:
-                            system_prompt = build_attachment_with_kb_prompt(build_context_from_chunks(chunks_data), source_type="local")
-                        elif all_attachments:
-                            system_prompt = build_attachment_only_prompt(source_type="local")
-                        elif chunks_data:
-                            system_prompt = build_kb_only_prompt(build_context_from_chunks(chunks_data))
-                        else:
-                            system_prompt = FALLBACK_PROMPT
-                    else:
-                        system_prompt = FALLBACK_CHAT_SYSTEM_PROMPT
-
-                    step_prompt = build_step_execution_prompt(
-                        base_system_prompt=system_prompt,
-                        goal=agent_run_state.goal,
-                        plan_snapshot=agent_run_state.plan_snapshot,
-                        current_step=agent_run_state.current_step or "step-1",
-                        next_step=agent_run_state.next_step,
-                        completed_steps_summary=agent_run_state.completed_steps_summary,
-                        available_tools=available_tools,
-                    )
-                    llm_messages = [{"role": "system", "content": step_prompt}]
-                    for msg in history_messages[-6:]:
-                        llm_messages.append({"role": msg.role, "content": msg.content})
-                    llm_messages.append({"role": "user", "content": user_message_text})
-
-                    logger.info(
-                        f"[Timing] 调用LLM开始, route={route_decision.route}, model={chat_model}, messages={len(llm_messages)}"
-                    )
-                    t0 = time.time()
-                    first_chunk_time = None
-                    async for chunk in stream_llm_response(llm, llm_messages, temperature=0.1):
+                    answer_state = AnswerStreamState()
+                    async for chunk in stream_answer_chunks(
+                        llm=llm,
+                        request=AnswerGenerationRequest(
+                            route=route_decision.route,
+                            user_message_text=user_message_text,
+                            material_text=material_text,
+                            source_hint=source_hint,
+                            chunks_data=chunks_data,
+                            has_attachments=bool(all_attachments),
+                            history_messages=[
+                                {"role": msg.role, "content": msg.content}
+                                for msg in history_messages[-6:]
+                            ],
+                            step_context=AnswerStepContext(
+                                goal=agent_run_state.goal,
+                                plan_snapshot=agent_run_state.plan_snapshot,
+                                current_step=agent_run_state.current_step or "step-1",
+                                next_step=agent_run_state.next_step,
+                                completed_steps_summary=agent_run_state.completed_steps_summary,
+                                available_tools=available_tools,
+                            ),
+                        ),
+                        state=answer_state,
+                    ):
                         if chunk:
-                            if first_chunk_time is None:
-                                first_chunk_time = time.time()
-                                timings["llm_first_token_ms"] = int((first_chunk_time - t0) * 1000)
-                                logger.info(f"[Timing] LLM首token: {timings['llm_first_token_ms']}ms")
                             full_content += chunk
-                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
-                    timings["llm_total_ms"] = int((time.time() - t0) * 1000)
-                    logger.info(f"[Timing] LLM响应完成: {timings['llm_total_ms']}ms, chars={len(full_content)}")
+                            yield format_sse_chunk(
+                                content=chunk,
+                                citations=[],
+                                finished=False,
+                                attachment_used=state.attachment_used,
+                            )
+                    timings.update(answer_state.timings)
                     # Ask-pending: append gentle ask to response
                     if state.web_search_mode == "ask_pending":
                         ask_text = '\n\n---\n知识库暂无相关信息，是否允许我开启联网搜索？（回复"好的"开启，或说"不用了"）'
