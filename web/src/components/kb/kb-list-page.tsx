@@ -82,6 +82,28 @@ export default function KBListPage() {
     return () => document.removeEventListener("mousedown", handlePointerDown);
   }, [departmentDropdownOpen, formDepartmentDropdownOpen]);
 
+  // ---- 数据 & 过滤 (hooks 必须在 early return 之前调用,避免 hooks 顺序不一致) ----
+  const normalizedKeyword = searchKeyword.trim().toLowerCase();
+
+  const baseFilteredKbs = useMemo(() => {
+    if (!kbs) return [];
+    if (departmentFilter === "all") return kbs;
+    return kbs.filter((kb: KnowledgeBase) =>
+      departmentFilter === "public"
+        ? !kb.department_id
+        : kb.department_id === departmentFilter
+    );
+  }, [kbs, departmentFilter]);
+
+  const visibleKbs = useMemo(() => {
+    if (!normalizedKeyword) return baseFilteredKbs;
+    return baseFilteredKbs.filter((kb: KnowledgeBase) =>
+      [kb.name, kb.description, kb.department_name]
+        .filter(Boolean)
+        .some((text) => String(text).toLowerCase().includes(normalizedKeyword))
+    );
+  }, [baseFilteredKbs, normalizedKeyword]);
+
   if (userLoading) {
     return (
       <div className="flex h-full items-center justify-center p-6">
@@ -122,28 +144,7 @@ export default function KBListPage() {
     }
   };
 
-  // ---- 数据 & 过滤 ----
-  const normalizedKeyword = searchKeyword.trim().toLowerCase();
-
-  const baseFilteredKbs = useMemo(() => {
-    if (!kbs) return [];
-    if (departmentFilter === "all") return kbs;
-    return kbs.filter((kb: KnowledgeBase) =>
-      departmentFilter === "public"
-        ? !kb.department_id
-        : kb.department_id === departmentFilter
-    );
-  }, [kbs, departmentFilter]);
-
-  const visibleKbs = useMemo(() => {
-    if (!normalizedKeyword) return baseFilteredKbs;
-    return baseFilteredKbs.filter((kb: KnowledgeBase) =>
-      [kb.name, kb.description, kb.department_name]
-        .filter(Boolean)
-        .some((text) => String(text).toLowerCase().includes(normalizedKeyword))
-    );
-  }, [baseFilteredKbs, normalizedKeyword]);
-
+  // ---- 渲染 ----
   const publicCount = kbs?.filter((kb: KnowledgeBase) => !kb.department_id).length || 0;
   const privateCount = Math.max((kbs?.length || 0) - publicCount, 0);
 
