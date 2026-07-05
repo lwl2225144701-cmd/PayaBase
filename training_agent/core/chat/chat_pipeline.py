@@ -12,7 +12,6 @@ import logging
 from datetime import datetime
 
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 
 from api.deps import DBSession, CurrentUser
 from api.schemas.chat import ChatStreamChunk
@@ -38,8 +37,6 @@ from core.prompts.chat import (
 from core.prompts.router import (
     build_content_generation_prompt,
     build_document_summary_prompt,
-    build_pdf_generation_prompt,
-    build_ppt_generation_prompt,
     FALLBACK_CHAT_SYSTEM_PROMPT,
 )
 from core.prompts.agent import build_step_execution_prompt, SOLUTION_AGENT_PROMPT
@@ -60,11 +57,15 @@ from core.chat.chat_context import build_context_from_chunks, build_material_tex
 from core.chat.chat_state import ChatRuntimeState
 from core.llm.factory import get_llm_client
 from core.agent.persistence import (
-    AgentPersistenceIds,
     persist_initial_agent_run,
     persist_agent_step_result,
     update_main_step_output,
     persist_finalize_step,
+)
+from core.chat.artifact_flow import (
+    ArtifactStepContext,
+    ArtifactGenerationRequest,
+    generate_route_artifact,
 )
 from models.tables import KnowledgeBase
 
@@ -424,43 +425,41 @@ async def handle_chat(
                             ppt_task_id=artifact["task_id"] if artifact["type"] == "ppt" else None,
                             pdf_task_id=artifact["task_id"] if artifact["type"] == "pdf" else None,
                         )
-                elif route_decision.route == "ppt_generation":
-                    prompt = build_ppt_generation_prompt(material_text or message, source_hint)
-                    step_prompt = build_step_execution_prompt(
-                        base_system_prompt=prompt,
-                        goal=agent_run_state.goal,
-                        plan_snapshot=agent_run_state.plan_snapshot,
-                        current_step=agent_run_state.current_step or "step-1",
-                        next_step=agent_run_state.next_step,
-                        completed_steps_summary=agent_run_state.completed_steps_summary,
-                        available_tools=available_tools,
+                elif route_decision.route in {"ppt_generation", "pdf_generation"}:
+                    artifact_result = await generate_route_artifact(
+                        llm=llm,
+                        request=ArtifactGenerationRequest(
+                            route=route_decision.route,
+                            material_text=material_text,
+                            message=message,
+                            source_hint=source_hint,
+                            conversation_title=conv.title or "知识整理",
+                            tenant_id=current_user.tenant_id,
+                            history_messages=[
+                                {"role": msg.role, "content": msg.content}
+                                for msg in history_messages[-6:]
+                            ],
+                            step_context=ArtifactStepContext(
+                                goal=agent_run_state.goal,
+                                plan_snapshot=agent_run_state.plan_snapshot,
+                                current_step=agent_run_state.current_step or "step-1",
+                                next_step=agent_run_state.next_step,
+                                completed_steps_summary=agent_run_state.completed_steps_summary,
+                                available_tools=available_tools,
+                            ),
+                        ),
                     )
-                    ppt_messages = [{"role": "system", "content": step_prompt}]
-                    for msg in history_messages[-6:]:
-                        ppt_messages.append({"role": msg.role, "content": msg.content})
-                    ppt_messages.append({"role": "user", "content": message})
 
-                    t0 = time.time()
-                    logger.info(f"[Timing] PPT链路调用LLM开始, model={chat_model}, messages={len(ppt_messages)}")
-                    async for chunk in stream_llm_response(llm, ppt_messages, temperature=0.2):
-                        if "llm_first_token_ms" not in timings:
-                            timings["llm_first_token_ms"] = int((time.time() - t0) * 1000)
-                        full_content += chunk
-                    timings["llm_total_ms"] = int((time.time() - t0) * 1000)
-                    logger.info(f"[Timing] PPT链路LLM完成: {timings['llm_total_ms']}ms, chars={len(full_content)}")
+                    full_content = artifact_result.content
+                    artifacts.extend(artifact_result.artifacts)
+                    timings.update(artifact_result.timings)
 
-                    ppt_tool = PPTGenerationTool(tenant_id=current_user.tenant_id)
-                    task_payload = json.loads(
-                        ppt_tool.invoke(content=full_content, title=conv.title or "知识整理")
+                    yield format_sse_chunk(
+                        content=full_content,
+                        citations=citations_list,
+                        finished=False,
+                        attachment_used=state.attachment_used,
                     )
-                    if task_payload.get("task_id"):
-                        artifact = {"type": "ppt", "task_id": task_payload["task_id"]}
-                        artifacts.append(artifact)
-                    summary_text = task_payload.get("message") or "PPT 生成任务已提交。"
-                    if source_hint:
-                        summary_text += f"\n来源：{source_hint}"
-                    full_content = summary_text
-                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=state.attachment_used)
                     for artifact in artifacts:
                         yield format_sse_chunk(
                             content="",
@@ -469,51 +468,6 @@ async def handle_chat(
                             attachment_used=state.attachment_used,
                             artifact=artifact,
                             ppt_task_id=artifact["task_id"] if artifact["type"] == "ppt" else None,
-                        )
-                elif route_decision.route == "pdf_generation":
-                    prompt = build_pdf_generation_prompt(material_text or message, source_hint)
-                    step_prompt = build_step_execution_prompt(
-                        base_system_prompt=prompt,
-                        goal=agent_run_state.goal,
-                        plan_snapshot=agent_run_state.plan_snapshot,
-                        current_step=agent_run_state.current_step or "step-1",
-                        next_step=agent_run_state.next_step,
-                        completed_steps_summary=agent_run_state.completed_steps_summary,
-                        available_tools=available_tools,
-                    )
-                    pdf_messages = [{"role": "system", "content": step_prompt}]
-                    for msg in history_messages[-6:]:
-                        pdf_messages.append({"role": msg.role, "content": msg.content})
-                    pdf_messages.append({"role": "user", "content": message})
-
-                    t0 = time.time()
-                    logger.info(f"[Timing] PDF链路调用LLM开始, model={chat_model}, messages={len(pdf_messages)}")
-                    async for chunk in stream_llm_response(llm, pdf_messages, temperature=0.2):
-                        if "llm_first_token_ms" not in timings:
-                            timings["llm_first_token_ms"] = int((time.time() - t0) * 1000)
-                        full_content += chunk
-                    timings["llm_total_ms"] = int((time.time() - t0) * 1000)
-                    logger.info(f"[Timing] PDF链路LLM完成: {timings['llm_total_ms']}ms, chars={len(full_content)}")
-
-                    pdf_tool = PDFExportTool(tenant_id=current_user.tenant_id)
-                    task_payload = json.loads(
-                        pdf_tool.invoke(content=full_content, title=conv.title or "知识整理")
-                    )
-                    if task_payload.get("task_id"):
-                        artifact = {"type": "pdf", "task_id": task_payload["task_id"]}
-                        artifacts.append(artifact)
-                    summary_text = task_payload.get("message") or "PDF 生成任务已提交。"
-                    if source_hint:
-                        summary_text += f"\n来源：{source_hint}"
-                    full_content = summary_text
-                    yield format_sse_chunk(content=full_content, citations=citations_list, finished=False, attachment_used=state.attachment_used)
-                    for artifact in artifacts:
-                        yield format_sse_chunk(
-                            content="",
-                            citations=[],
-                            finished=False,
-                            attachment_used=state.attachment_used,
-                            artifact=artifact,
                             pdf_task_id=artifact["task_id"] if artifact["type"] == "pdf" else None,
                         )
                 else:
