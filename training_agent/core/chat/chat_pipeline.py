@@ -9,7 +9,6 @@ import json
 import time
 import asyncio
 import logging
-from datetime import datetime
 
 from fastapi.responses import StreamingResponse
 
@@ -27,7 +26,6 @@ from core.chat.conversation_service import (
     validate_conversation,
     save_user_message,
     get_history_messages,
-    save_assistant_message,
 )
 from core.chat.web_search_state import (
     process_web_search_explicit_keyword,
@@ -63,6 +61,10 @@ from core.chat.finalize_flow import (
     FinalizeFlowRequest,
     FinalizeFlowState,
     stream_finalize_flow,
+)
+from core.chat.completion_flow import (
+    CompletionRequest,
+    complete_chat_response,
 )
 from models.tables import KnowledgeBase
 
@@ -561,48 +563,50 @@ async def handle_chat(
                         output=full_content,
                     )
 
-            latency_ms = int((time.time() - t_total) * 1000)
-            timings["total_ms"] = latency_ms
+            completion_result = await complete_chat_response(
+                db=db,
+                request=CompletionRequest(
+                    conversation_id=conv.id,
+                    content=full_content,
+                    citations=citations_list,
+                    route=route_decision.route,
+                    decision_source=route_decision.decision_source,
+                    reason=route_decision.reason,
+                    confidence=route_decision.confidence,
+                    agent_run_id=agent_run_state.run_id,
+                    agent_run_db_id=str(persistence_ids.run_db_id) if persistence_ids.run_db_id else None,
+                    agent_status=agent_run_state.status,
+                    agent_current_step=agent_run_state.current_step,
+                    agent_next_step=agent_run_state.next_step,
+                    completed_steps_summary=agent_run_state.completed_steps_summary,
+                    artifacts=artifacts,
+                    timings=timings,
+                    attachment_used=state.attachment_used,
+                    web_search_mode=state.web_search_mode,
+                    started_at=t_total,
+                ),
+            )
+
             logger.info(
-                f"[Timing] 总耗时: {latency_ms}ms, "
+                f"[Timing] 总耗时: {completion_result.latency_ms}ms, "
                 f"routing={route_decision.route}, retrieval_ms={timings.get('retrieval_ms', 0)}, "
                 f"attachments={len(all_attachments)}, citations={len(citations_list)}"
             )
 
-            await save_assistant_message(
-                conversation_id=conv.id,
-                content=full_content,
-                citations=citations_list,
-                context={
-                    "route": route_decision.route,
-                    "decision_source": route_decision.decision_source,
-                    "reason": route_decision.reason,
-                    "confidence": route_decision.confidence,
-                    "agent": {
-                        "run_id": agent_run_state.run_id,
-                        "run_db_id": str(persistence_ids.run_db_id) if persistence_ids.run_db_id else None,
-                        "status": agent_run_state.status,
-                        "current_step": agent_run_state.current_step,
-                        "next_step": agent_run_state.next_step,
-                        "completed_steps_summary": agent_run_state.completed_steps_summary,
-                    },
-                    "artifacts": artifacts,
-                    "timings": timings,
-                },
-                token_count=len(full_content.split()),
-                latency_ms=latency_ms,
-                db=db,
+            yield format_sse_chunk(
+                content="",
+                citations=[],
+                finished=False,
+                attachment_used=state.attachment_used,
+                agent=completion_result.agent_payload,
             )
-
-            yield format_sse_chunk(content="", citations=[], finished=False, attachment_used=state.attachment_used, agent={
-                "run_id": agent_run_state.run_id,
-                "run_db_id": str(persistence_ids.run_db_id) if persistence_ids.run_db_id else None,
-                "status": agent_run_state.status,
-                "current_step": agent_run_state.current_step,
-                "next_step": agent_run_state.next_step,
-                "completed_steps_summary": agent_run_state.completed_steps_summary,
-            })
-            yield format_sse_chunk(content="", citations=[], finished=True, attachment_used=state.attachment_used, web_search_mode=state.web_search_mode)
+            yield format_sse_chunk(
+                content="",
+                citations=[],
+                finished=True,
+                attachment_used=state.attachment_used,
+                web_search_mode=completion_result.finished_payload["web_search_mode"],
+            )
 
     return StreamingResponse(
         generate_response(),
