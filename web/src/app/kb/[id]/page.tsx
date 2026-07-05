@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
@@ -11,6 +11,7 @@ import {
   ArrowUpDownIcon,
   Building2Icon,
   CheckCircle2Icon,
+  ChevronLeftIcon,
   ChevronRightIcon,
   FileIcon,
   FileTextIcon,
@@ -222,6 +223,8 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   const [searchKeyword, setSearchKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(10);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
@@ -261,6 +264,27 @@ export default function DocListPage({ params }: { params: { id: string } }) {
     });
     return sorted;
   }, [docs, statusFilter, normalizedKeyword, sortKey]);
+
+  const totalItems = filtered.length;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalItems);
+  const pagedDocs = useMemo<any[]>(
+    () => filtered.slice(startIndex, startIndex + pageSize),
+    [filtered, startIndex, pageSize]
+  );
+
+  // 搜索 / 筛选 / 排序 / 页大小 变化时, 重置到第 1 页
+  useEffect(() => {
+    setPage(1);
+  }, [normalizedKeyword, statusFilter, sortKey, pageSize]);
+
+  // 越界保护: 数据被筛掉后 page 超出 totalPages 时, 拉回最后一页
+  useEffect(() => {
+    if (page > totalPages) {
+      setPage(totalPages);
+    }
+  }, [page, totalPages]);
 
   const handleUpload = async () => {
     if (!files || files.length === 0) return;
@@ -435,13 +459,17 @@ export default function DocListPage({ params }: { params: { id: string } }) {
         </nav>
 
         <div className="border-t px-4 py-3 text-xs text-muted-foreground">
-          <div className="flex items-center justify-between">
-            <span>文档数</span>
-            <span className="font-medium text-foreground">{kb?.doc_count ?? (docs as any[])?.length ?? 0}</span>
-          </div>
-          <div className="mt-1.5 flex items-center justify-between">
-            <span>关联应用</span>
-            <span className="font-medium text-foreground">0</span>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md bg-background/60 px-2.5 py-2">
+              <div className="text-[10px] uppercase tracking-wide opacity-70">文档数</div>
+              <div className="mt-0.5 text-sm font-medium text-foreground">
+                {kb?.doc_count ?? (docs as any[])?.length ?? 0}
+              </div>
+            </div>
+            <div className="rounded-md bg-background/60 px-2.5 py-2">
+              <div className="text-[10px] uppercase tracking-wide opacity-70">关联应用</div>
+              <div className="mt-0.5 text-sm font-medium text-foreground">0</div>
+            </div>
           </div>
           <Button
             variant="outline"
@@ -451,7 +479,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             title="即将推出"
           >
             <InfoIcon className="mr-1.5 h-3.5 w-3.5" />
-            API 入口
+            访问 API
           </Button>
         </div>
       </aside>
@@ -600,8 +628,9 @@ export default function DocListPage({ params }: { params: { id: string } }) {
           {/* Loading skeleton table */}
           {loading && (
             <div className="overflow-hidden rounded-lg border bg-background">
-              <table className="w-full text-sm">
-                <thead>
+              <div className="overflow-x-auto">
+                <table className="min-w-[960px] w-full text-sm">
+                  <thead>
                   <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
                     <th className="w-10 px-4 py-2.5">
                       <div className="h-3.5 w-3.5 rounded bg-muted" />
@@ -609,8 +638,8 @@ export default function DocListPage({ params }: { params: { id: string } }) {
                     <th className="w-12 px-4 py-2.5">#</th>
                     <th className="px-4 py-2.5">名称</th>
                     <th className="px-4 py-2.5">分段</th>
-                    <th className="px-4 py-2.5">字符数</th>
-                    <th className="px-4 py-2.5">召回</th>
+                    <th className="px-4 py-2.5">大小</th>
+                    <th className="px-4 py-2.5">召回次数</th>
                     <th className="px-4 py-2.5">上传时间</th>
                     <th className="px-4 py-2.5">状态</th>
                     <th className="w-16 px-4 py-2.5"></th>
@@ -621,7 +650,8 @@ export default function DocListPage({ params }: { params: { id: string } }) {
                     <TableRowSkeleton key={i} />
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </div>
             </div>
           )}
 
@@ -683,8 +713,9 @@ export default function DocListPage({ params }: { params: { id: string } }) {
           {/* Doc table */}
           {!loading && !hasNoDocs && !showEmptySearch && !showEmptyFilter && filtered.length > 0 && (
             <div className="overflow-hidden rounded-lg border bg-background">
-              <table className="w-full text-sm">
-                <thead>
+              <div className="overflow-x-auto">
+                <table className="min-w-[960px] w-full text-sm">
+                  <thead>
                   <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
                     <th className="w-10 px-4 py-2.5">
                       <input
@@ -697,15 +728,15 @@ export default function DocListPage({ params }: { params: { id: string } }) {
                     <th className="w-12 px-4 py-2.5">#</th>
                     <th className="px-4 py-2.5">名称</th>
                     <th className="px-4 py-2.5">分段</th>
-                    <th className="px-4 py-2.5">字符数</th>
-                    <th className="px-4 py-2.5">召回</th>
+                    <th className="px-4 py-2.5">大小</th>
+                    <th className="px-4 py-2.5">召回次数</th>
                     <th className="px-4 py-2.5">上传时间</th>
                     <th className="px-4 py-2.5">状态</th>
                     <th className="w-24 px-4 py-2.5 text-right">操作</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((doc: any, idx: number) => (
+                  {pagedDocs.map((doc: any, idx: number) => (
                     <tr
                       key={doc.id}
                       className="group border-b border-border/60 transition-colors last:border-b-0 hover:bg-muted/30"
@@ -718,7 +749,9 @@ export default function DocListPage({ params }: { params: { id: string } }) {
                           title="批量操作 (即将推出)"
                         />
                       </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">{idx + 1}</td>
+                      <td className="px-4 py-3 text-xs text-muted-foreground">
+                        {(page - 1) * pageSize + idx + 1}
+                      </td>
                       <td className="max-w-[280px] px-4 py-3">
                         <div className="flex min-w-0 items-center gap-2.5">
                           <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${fileTypeTheme(doc.file_type)}`}>
@@ -786,7 +819,57 @@ export default function DocListPage({ params }: { params: { id: string } }) {
                     </tr>
                   ))}
                 </tbody>
-              </table>
+                </table>
+              </div>
+
+              {/* Pagination */}
+              <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-3 text-sm">
+                <div className="text-xs text-muted-foreground">
+                  共 {totalItems} 个文档
+                </div>
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    disabled={page <= 1}
+                  >
+                    <ChevronLeftIcon className="mr-1 h-3.5 w-3.5" />
+                    上一页
+                  </Button>
+                  <span className="min-w-[60px] text-center text-xs text-muted-foreground">
+                    {page} / {totalPages}
+                  </span>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="h-8 text-xs"
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    disabled={page >= totalPages}
+                  >
+                    下一页
+                    <ChevronRightIcon className="ml-1 h-3.5 w-3.5" />
+                  </Button>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <span>每页</span>
+                  {[10, 25, 50].map((size) => (
+                    <button
+                      key={size}
+                      type="button"
+                      onClick={() => setPageSize(size)}
+                      className={`h-7 rounded-md px-2 text-xs transition-colors ${
+                        pageSize === size
+                          ? "bg-primary/10 text-primary"
+                          : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                      }`}
+                    >
+                      {size}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           )}
         </div>
