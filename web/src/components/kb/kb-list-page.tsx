@@ -165,6 +165,11 @@ export default function KBListPage() {
   // ---- 渲染 ----
   const hasNoKbs = !isLoading && (!kbs || kbs.length === 0);
   const showEmptySearch = !isLoading && normalizedKeyword && baseFilteredKbs.length > 0 && visibleKbs.length === 0;
+  const showEmptyFilter =
+    !isLoading &&
+    !normalizedKeyword &&
+    !hasNoKbs &&
+    visibleKbs.length === 0;
   const loading = isLoading || userLoading;
 
   return (
@@ -446,6 +451,18 @@ export default function KBListPage() {
           </div>
         )}
 
+        {/* Empty: filter (department / public) returns nothing */}
+        {!loading && showEmptyFilter && (
+          <div className="flex flex-col items-center justify-center py-20 text-center">
+            <p className="text-sm text-muted-foreground">当前筛选下暂无知识库</p>
+            {canManageKnowledgeBases && (
+              <p className="mt-2 max-w-sm text-xs text-muted-foreground/80">
+                可以切换筛选条件,或创建新的知识库。
+              </p>
+            )}
+          </div>
+        )}
+
         {/* Card grid */}
         {!loading && visibleKbs && visibleKbs.length > 0 && (
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -457,7 +474,7 @@ export default function KBListPage() {
                 <CardHeader className="flex-1 pb-0 pt-5">
                   <div className="flex items-start justify-between gap-3">
                     <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${iconThemes[index % iconThemes.length]}`}>
-                      <FileTextIcon className="h-4.5 w-4.5" />
+                      <FileTextIcon className="h-4 w-4" />
                     </div>
                     <Badge
                       variant={kb.department_id ? "secondary" : "outline"}
