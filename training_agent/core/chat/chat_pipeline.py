@@ -21,11 +21,7 @@ from core.chat.rag_flow import RagRetrievalRequest, retrieve_chat_context
 from core.agent.orchestrator import AgentOrchestrator
 from core.agent.request_router import RequestRouter
 from core.agent.strategy import select_task_profile
-from core.prompts.router import (
-    FALLBACK_CHAT_SYSTEM_PROMPT,
-)
-from core.prompts.agent import build_step_execution_prompt
-from core.chat.stream_events import stream_llm_response, format_sse_chunk
+from core.chat.stream_events import format_sse_chunk
 from core.chat.attachment_service import parse_attachments
 from core.chat.conversation_service import (
     validate_conversation,
@@ -62,6 +58,11 @@ from core.chat.autonomous_flow import (
     AutonomousExecutionRequest,
     AutonomousExecutionState,
     stream_autonomous_execution,
+)
+from core.chat.finalize_flow import (
+    FinalizeFlowRequest,
+    FinalizeFlowState,
+    stream_finalize_flow,
 )
 from models.tables import KnowledgeBase
 
@@ -512,118 +513,54 @@ async def handle_chat(
                 agent_step_state=agent_step_state,
             )
 
-            # Dynamic follow-up step
-            followup_step_def = orchestrator.planner.build_followup_step(
-                agent_run_state,
-                agent_step_state,
-                max_retries=orchestrator.policy.max_retries,
-            )
-            if followup_step_def:
-                snapshot_steps = (agent_run_state.plan_snapshot or {}).get("steps", [])
-                snapshot_steps.append(followup_step_def)
-                agent_run_state.plan_snapshot["steps"] = snapshot_steps
+            # Dynamic follow-up step (retry / finalize)
+            finalize_state = FinalizeFlowState()
 
-                finalize_step_state = orchestrator.runner.start_step(agent_run_state, followup_step_def)
-                finalize_output = "agent_finalize_completed"
-                finalize_already_completed = False
-                finalize_trace: list[dict] = [
-                    {"type": "followup", "step_type": followup_step_def.get("step_type"), "step_goal": followup_step_def.get("step_goal")}
-                ]
-                if followup_step_def.get("step_type") == "retry_decision":
-                    retry_output = ""
-                    retry_error = ""
-                    remaining_attempts = max(1, orchestrator.policy.max_retries - agent_run_state.retry_count + 1)
-                    for attempt in range(1, remaining_attempts + 1):
-                        if retry_error and not orchestrator.policy.is_retryable_error(retry_error):
-                            break
-                        retry_error = ""
-                        try:
-                            retry_system_prompt = build_step_execution_prompt(
-                                base_system_prompt=FALLBACK_CHAT_SYSTEM_PROMPT,
-                                goal=agent_run_state.goal,
-                                plan_snapshot=agent_run_state.plan_snapshot,
-                                current_step=followup_step_def.get("step_id") or "retry-1",
-                                next_step=None,
-                                completed_steps_summary=agent_run_state.completed_steps_summary,
-                                available_tools=available_tools,
-                            )
-                            retry_messages = [{"role": "system", "content": retry_system_prompt}]
-                            for msg in history_messages[-4:]:
-                                retry_messages.append({"role": msg.role, "content": msg.content})
-                            retry_messages.append({"role": "user", "content": user_message_text})
-                            async for chunk in stream_llm_response(llm, retry_messages, temperature=0.1):
-                                if chunk:
-                                    retry_output += chunk
-                                    yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
-                            if retry_output:
-                                break
-                            retry_error = "retry_empty_output"
-                        except Exception as retry_exc:
-                            retry_error = str(retry_exc)
-                        if retry_error and attempt < remaining_attempts and orchestrator.policy.is_retryable_error(retry_error):
-                            delay = orchestrator.policy.retry_backoff_seconds(attempt)
-                            finalize_trace.append(
-                                {"type": "retry_backoff", "attempt": attempt, "delay_sec": round(delay, 3), "error": retry_error[:200]}
-                            )
-                            await asyncio.sleep(delay)
-                    if retry_output:
-                        full_content = f"{full_content}\n\n[重试结果]\n{retry_output}"
-                        finalize_output = "retry_reexecute_success"
-                    else:
-                        finalize_output = "retry_reexecute_failed"
-                        if not retry_error:
-                            retry_error = "retry_empty_output"
-                    finalize_trace.append(
-                        {
-                            "type": "retry",
-                            "retry_count": agent_run_state.retry_count,
-                            "max_retries": orchestrator.policy.max_retries,
-                            "decision": "retry_reexecute_once",
-                            "retry_error": retry_error[:1000] if retry_error else "",
-                        }
+            async for chunk in stream_finalize_flow(
+                llm=llm,
+                orchestrator=orchestrator,
+                agent_run_state=agent_run_state,
+                agent_step_state=agent_step_state,
+                request=FinalizeFlowRequest(
+                    user_message_text=user_message_text,
+                    history_messages=[
+                        {"role": msg.role, "content": msg.content}
+                        for msg in history_messages[-4:]
+                    ],
+                    available_tools=available_tools,
+                    artifacts=artifacts,
+                ),
+                state=finalize_state,
+            ):
+                if chunk:
+                    full_content += chunk
+                    yield format_sse_chunk(
+                        content=chunk,
+                        citations=[],
+                        finished=False,
+                        attachment_used=state.attachment_used,
                     )
-                    if retry_error:
-                        retry_error_type = orchestrator.policy.classify_error(retry_error)
-                        fallback_on_retry = orchestrator.policy.fallback_message_for(retry_error_type)
-                        full_content = f"{full_content}\n\n{fallback_on_retry}"
-                        orchestrator.runner.complete_step(
-                            agent_run_state,
-                            finalize_step_state,
-                            output=finalize_output,
-                            tool_trace=finalize_trace + [{"type": "artifacts", "items": artifacts}],
-                            error=f"{retry_error_type}:{retry_error}",
-                        )
-                        agent_run_state.last_error = f"{retry_error_type}:{retry_error[:1000]}"
-                        finalize_already_completed = True
-                    else:
-                        orchestrator.runner.complete_step(
-                            agent_run_state,
-                            finalize_step_state,
-                            output=finalize_output,
-                            tool_trace=finalize_trace + [{"type": "artifacts", "items": artifacts}],
-                        )
-                        finalize_already_completed = True
-                        await update_main_step_output(
-                            db=db,
-                            step_db_id=persistence_ids.step_db_id,
-                            output=full_content,
-                        )
-                if followup_step_def.get("step_type") == "fallback_finalize":
-                    finalize_output = "fallback_finalize_completed"
-                    finalize_trace.append({"type": "fallback", "message": "reroute_to_safe_fallback_response"})
-                if finalize_step_state is not None and not finalize_already_completed:
-                    orchestrator.runner.complete_step(
-                        agent_run_state,
-                        finalize_step_state,
-                        output=finalize_output,
-                        tool_trace=finalize_trace + [{"type": "artifacts", "items": artifacts}],
-                    )
+
+            if finalize_state.content_suffix:
+                full_content += finalize_state.content_suffix
+
+            if finalize_state.finalize_step_state is not None:
                 persistence_ids = await persist_finalize_step(
                     db=db,
                     ids=persistence_ids,
                     agent_run_state=agent_run_state,
-                    finalize_step_state=finalize_step_state,
+                    finalize_step_state=finalize_state.finalize_step_state,
                 )
+
+            # retry 成功后更新主 step output
+            if finalize_state.finalize_trace:
+                final_trace_types = [t.get("type") for t in finalize_state.finalize_trace]
+                if "retry" in final_trace_types and not finalize_state.error:
+                    await update_main_step_output(
+                        db=db,
+                        step_db_id=persistence_ids.step_db_id,
+                        output=full_content,
+                    )
 
             latency_ms = int((time.time() - t_total) * 1000)
             timings["total_ms"] = latency_ms
