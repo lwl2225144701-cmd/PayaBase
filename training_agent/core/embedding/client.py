@@ -43,6 +43,7 @@ class EmbeddingClient:
             self._client = httpx.AsyncClient(
                 base_url=self.base_url,
                 timeout=self.timeout,
+                trust_env=False,
             )
         return self._client
 
