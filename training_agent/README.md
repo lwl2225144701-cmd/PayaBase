@@ -104,6 +104,28 @@ curl http://127.0.0.1:8123/health
 - `core/agent/`：意图分类、ReAct Agent 编排
 - `models/`：ORM 模型
 
+## Chat Pipeline 拆分说明
+
+`core/chat/` 目录将原先大函数 `run_chat_pipeline` 拆为职责单一的小模块：
+
+| 文件 | 职责 |
+|------|------|
+| `chat_pipeline.py` | 主编排：串联各 flow、SSE 包装、状态写回 |
+| `routing_flow.py` | 路由决策、AgentRun 初始状态 |
+| `rag_flow.py` | RAG 检索（embedding + retriever） |
+| `answer_flow.py` | 普通 LLM 回答（内容生成/文档总结/知识问答） |
+| `artifact_flow.py` | PPT/PDF 直接生成 |
+| `autonomous_flow.py` | Autonomous Agent 工具执行 |
+| `finalize_flow.py` | Retry / Finalize 流程 |
+| `completion_flow.py` | 收尾保存：消息写入 + context 组装 |
+| `persistence.py`（位于 `core/agent/`） | AgentRun / AgentStep 持久化 |
+
+各 flow 模块设计约束：
+- 不直接依赖 `ChatRuntimeState` / `CurrentUser`
+- 不直接访问数据库（`db.commit` / `db.rollback`）
+- 不输出 SSE（由 `chat_pipeline.py` 负责包装）
+- 使用 frozen dataclass 输入/输出参数包
+
 ## 模型配置化(LLM Factory)
 
 业务层不感知 provider / api_key / base_url / model,统一通过 `core.llm.factory.get_llm_client(purpose)` 获取。
