@@ -628,12 +628,12 @@ export default function KBListPage() {
                       </CardHeader>
 
                       <CardContent className="pt-5">
-                        <div className="mt-4 flex flex-wrap gap-2">
-                          <span className="rounded-md bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground">
+                        <div className="mt-4 flex items-center justify-between gap-2">
+                          <span className="shrink-0 rounded-md bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground">
                             {kb.doc_count || 0} 个文档
                           </span>
                           <span
-                            className={`rounded-md px-2.5 py-1 text-xs ${
+                            className={`shrink-0 rounded-md px-2.5 py-1 text-xs ${
                               kb.can_manage
                                 ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
                                 : "bg-muted/50 text-muted-foreground"
