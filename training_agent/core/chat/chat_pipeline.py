@@ -533,7 +533,6 @@ async def handle_chat(
                 state=finalize_state,
             ):
                 if chunk:
-                    full_content += chunk
                     yield format_sse_chunk(
                         content=chunk,
                         citations=[],
