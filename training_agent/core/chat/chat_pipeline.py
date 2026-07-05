@@ -20,18 +20,11 @@ from core.exceptions import NotFoundException, ValidationException
 from core.chat.rag_flow import RagRetrievalRequest, retrieve_chat_context
 from core.agent.orchestrator import AgentOrchestrator
 from core.agent.request_router import RequestRouter
-from core.agent.executor import AgentStepExecutor
 from core.agent.strategy import select_task_profile
-from core.tools.registry import ToolRegistry
-from core.tools.knowledge_tool import KnowledgeRetrievalTool
-from core.tools.solution_tool import SolutionGeneratorTool
-from core.tools.web_search_tool import WebSearchTool
-from core.tools.ppt_tool import PPTGenerationTool
-from core.tools.pdf_export_tool import PDFExportTool
 from core.prompts.router import (
     FALLBACK_CHAT_SYSTEM_PROMPT,
 )
-from core.prompts.agent import build_step_execution_prompt, SOLUTION_AGENT_PROMPT
+from core.prompts.agent import build_step_execution_prompt
 from core.chat.stream_events import stream_llm_response, format_sse_chunk
 from core.chat.attachment_service import parse_attachments
 from core.chat.conversation_service import (
@@ -64,6 +57,11 @@ from core.chat.answer_flow import (
     AnswerGenerationRequest,
     AnswerStreamState,
     stream_answer_chunks,
+)
+from core.chat.autonomous_flow import (
+    AutonomousExecutionRequest,
+    AutonomousExecutionState,
+    stream_autonomous_execution,
 )
 from models.tables import KnowledgeBase
 
@@ -333,87 +331,42 @@ async def handle_chat(
                 if "[FORCE_AGENT_STEP1_FAIL]" in (message or ""):
                     raise RuntimeError("forced_step1_failure_for_mvp_regression")
                 if autonomous_tool_mode:
-                    registry = ToolRegistry()
-                    if state.active_kb_id:
-                        registry.register(
-                            KnowledgeRetrievalTool(
-                                kb_id=str(state.active_kb_id),
-                                kb_name=state.active_kb_name,
-                            )
-                        )
-                    if task_profile.allow_external_search or state.web_search_mode == "on":
-                        registry.register(WebSearchTool())
-                    registry.register(SolutionGeneratorTool(llm))
-                    registry.register(PPTGenerationTool(tenant_id=current_user.tenant_id))
-                    registry.register(PDFExportTool(tenant_id=current_user.tenant_id))
+                    autonomous_state = AutonomousExecutionState()
 
-                    if state.web_search_mode == "on" or task_profile.allow_external_search:
-                        autonomous_system_prompt = (
-                            f"{SOLUTION_AGENT_PROMPT}\n\n"
-                            f"当前状态：web_search 工具已就绪。"
-                        )
-                    else:
-                        autonomous_system_prompt = (
-                            "你是一个个人 AI 知识库助手自治执行器。\n"
-                            f"{task_profile.build_instruction()}\n"
-                            "必须严格围绕当前目标选择工具。"
-                        )
-
-                    executor = AgentStepExecutor(
-                        llm_client=llm,
-                        registry=registry,
-                        system_prompt=autonomous_system_prompt,
-                        max_iterations=settings.max_iterations,
-                    )
-                    t0 = time.time()
-                    logger.info(
-                        f"[Timing] 自治Agent工具链开始, route={route_decision.route}, "
-                        f"tools={registry.list_tools()}"
-                    )
-                    async for chunk in executor.run(query=user_message_text, history=[
-                        {"role": msg.role, "content": msg.content}
-                        for msg in history_messages[-6:]
-                    ]):
-                        if chunk:
-                            if "llm_first_token_ms" not in timings:
-                                timings["llm_first_token_ms"] = int((time.time() - t0) * 1000)
-                            full_content += chunk
-                            yield format_sse_chunk(content=chunk, citations=[], finished=False, attachment_used=state.attachment_used)
-                    timings["llm_total_ms"] = int((time.time() - t0) * 1000)
-                    artifacts.extend(executor.artifacts)
-                    agent_step_state.tool_trace.extend(executor.tool_trace)
-                    if (
-                        task_profile.artifact_required
-                        and not artifacts
-                        and full_content
-                        and "请提供" not in full_content
-                        and "资料不足" not in full_content
-                        and "生成回答时出现错误" not in full_content
+                    async for chunk in stream_autonomous_execution(
+                        llm=llm,
+                        request=AutonomousExecutionRequest(
+                            query=user_message_text,
+                            history_messages=[
+                                {"role": msg.role, "content": msg.content}
+                                for msg in history_messages[-6:]
+                            ],
+                            tenant_id=current_user.tenant_id,
+                            conversation_title=conv.title or "知识整理",
+                            active_kb_id=str(state.active_kb_id) if state.active_kb_id else None,
+                            active_kb_name=state.active_kb_name,
+                            web_search_enabled=(
+                                task_profile.allow_external_search
+                                or state.web_search_mode == "on"
+                            ),
+                            task_profile=task_profile,
+                        ),
+                        state=autonomous_state,
                     ):
-                        registry_tool = registry.get(task_profile.artifact_tool or "")
-                        if registry_tool:
-                            artifact_result_raw = registry_tool.invoke(
-                                content=full_content,
-                                title=conv.title or "知识整理",
+                        if chunk:
+                            full_content += chunk
+                            yield format_sse_chunk(
+                                content=chunk,
+                                citations=[],
+                                finished=False,
+                                attachment_used=state.attachment_used,
                             )
-                            agent_step_state.tool_trace.append(
-                                {
-                                    "type": "task_profile_enforced_tool",
-                                    "tool_name": task_profile.artifact_tool,
-                                    "goal_type": task_profile.goal_type,
-                                    "content_type": task_profile.content_type,
-                                    "result_preview": artifact_result_raw[:500],
-                                }
-                            )
-                            try:
-                                artifact_result = json.loads(artifact_result_raw)
-                            except json.JSONDecodeError:
-                                artifact_result = {}
-                            task_id = artifact_result.get("task_id")
-                            if task_id:
-                                artifact_type = "pdf" if task_profile.artifact_tool == "pdf_export" else "ppt"
-                                artifacts.append({"type": artifact_type, "task_id": task_id})
-                    for artifact in artifacts:
+
+                    timings.update(autonomous_state.timings)
+                    artifacts.extend(autonomous_state.artifacts)
+                    agent_step_state.tool_trace.extend(autonomous_state.tool_trace)
+
+                    for artifact in autonomous_state.artifacts:
                         yield format_sse_chunk(
                             content="",
                             citations=[],
