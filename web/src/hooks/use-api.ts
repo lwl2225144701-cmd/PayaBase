@@ -56,6 +56,25 @@ export function useDocuments(kbId: string, options?: { refetchInterval?: number 
   });
 }
 
+/**
+ * 文档分页查询 (服务端分页)
+ * @param kbId 知识库 ID
+ * @param params { page, pageSize, q?, status?, sort? }
+ * @returns DocumentPageResponse { items, total, page, page_size, counts? }
+ */
+export function useDocumentsPage(
+  kbId: string,
+  params: { page: number; pageSize: number; q?: string; status?: string; sort?: string },
+  options?: { refetchInterval?: number }
+) {
+  return useQuery({
+    queryKey: ["documentsPage", kbId, params],
+    queryFn: () => api.getDocumentsPage(kbId, params),
+    enabled: !!kbId,
+    refetchInterval: options?.refetchInterval,
+  });
+}
+
 export function useUploadDocument() {
   const queryClient = useQueryClient();
   return useMutation({

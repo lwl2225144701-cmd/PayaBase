@@ -43,6 +43,23 @@ class DocumentListResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class DocumentStatusCounts(BaseModel):
+    """文档状态计数。indexing = indexing + pending 之和, 与前端 tab 语义对齐。"""
+    all: int = 0
+    ready: int = 0
+    indexing: int = 0
+    error: int = 0
+
+
+class DocumentPageResponse(BaseModel):
+    """分页文档列表响应。"""
+    items: list[DocumentListResponse]
+    total: int
+    page: int
+    page_size: int
+    counts: DocumentStatusCounts
+
+
 class ChunkResponse(BaseModel):
     id: str
     document_id: str

@@ -27,7 +27,7 @@ import {
   UploadIcon,
   XIcon,
 } from "lucide-react";
-import { useDocuments, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase } from "@/hooks/use-api";
+import { useDocumentsPage, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase } from "@/hooks/use-api";
 
 type StatusFilter = "all" | "ready" | "indexing" | "pending" | "error";
 type SortKey = "created_desc" | "created_asc" | "name_asc" | "name_desc";
@@ -213,7 +213,6 @@ function TableRowSkeleton() {
 
 export default function DocListPage({ params }: { params: { id: string } }) {
   const kbId = params.id;
-  const { data: docs, isLoading } = useDocuments(kbId);
   const { data: kb, isLoading: kbLoading } = useKnowledgeBase(kbId);
   const uploadDocs = useUploadDocuments();
   const deleteDoc = useDeleteDocument();
@@ -229,50 +228,41 @@ export default function DocListPage({ params }: { params: { id: string } }) {
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
 
+  // ====== 服务端分页查询 ======
+  const docsPageQuery = useDocumentsPage(
+    kbId,
+    {
+      page,
+      pageSize,
+      q: normalizedKeyword || undefined,
+      status: statusFilter === "all" ? undefined : statusFilter,
+      sort: sortKey,
+    },
+    // 文档可能正在索引, 启用 3s 轮询让状态自动刷新
+    { refetchInterval: 3000 }
+  );
+  const docsPage = docsPageQuery.data;
+  const docs: any[] = docsPage?.items || [];
+  const totalItems = docsPage?.total ?? 0;
+  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, totalItems);
+  // 后端已按 page/page_size 切片, 直接用 docs
+  const pagedDocs = docs;
+
+  // statusCounts 优先用后端 counts, 没有再 fallback 到当前页统计
   const statusCounts = useMemo(() => {
-    const list = (docs as any[]) || [];
+    if (docsPage?.counts) {
+      return docsPage.counts;
+    }
+    const list = docs;
     return {
       all: list.length,
       ready: list.filter((d) => d.status === "ready").length,
       indexing: list.filter((d) => d.status === "indexing" || d.status === "pending").length,
       error: list.filter((d) => d.status === "error").length,
     };
-  }, [docs]);
-
-  const filtered = useMemo<any[]>(() => {
-    if (!docs) return [];
-    const base = (docs as any[]).filter((doc) => {
-      if (statusFilter !== "all" && doc.status !== statusFilter) return false;
-      if (!normalizedKeyword) return true;
-      return [doc.title, doc.file_type]
-        .filter(Boolean)
-        .some((text: any) => String(text).toLowerCase().includes(normalizedKeyword));
-    });
-    const sorted = [...base];
-    sorted.sort((a, b) => {
-      switch (sortKey) {
-        case "created_asc":
-          return String(a.created_at || "").localeCompare(String(b.created_at || ""));
-        case "name_asc":
-          return String(a.title || "").localeCompare(String(b.title || ""));
-        case "name_desc":
-          return String(b.title || "").localeCompare(String(a.title || ""));
-        case "created_desc":
-        default:
-          return String(b.created_at || "").localeCompare(String(a.created_at || ""));
-      }
-    });
-    return sorted;
-  }, [docs, statusFilter, normalizedKeyword, sortKey]);
-
-  const totalItems = filtered.length;
-  const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
-  const startIndex = (page - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, totalItems);
-  const pagedDocs = useMemo<any[]>(
-    () => filtered.slice(startIndex, startIndex + pageSize),
-    [filtered, startIndex, pageSize]
-  );
+  }, [docsPage, docs]);
 
   // 搜索 / 筛选 / 排序 / 页大小 变化时, 重置到第 1 页
   useEffect(() => {
@@ -340,19 +330,19 @@ export default function DocListPage({ params }: { params: { id: string } }) {
     }
   };
 
-  const loading = isLoading || kbLoading;
-  const hasNoDocs = !loading && (!docs || docs.length === 0);
+  const loading = docsPageQuery.isLoading || kbLoading;
+  const hasNoDocs = !loading && totalItems === 0;
   const showEmptySearch =
     !loading &&
     !hasNoDocs &&
     normalizedKeyword.length > 0 &&
-    filtered.length === 0;
+    docs.length === 0;
   const showEmptyFilter =
     !loading &&
     !hasNoDocs &&
     normalizedKeyword.length === 0 &&
     statusFilter !== "all" &&
-    filtered.length === 0;
+    docs.length === 0;
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
@@ -711,7 +701,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
           )}
 
           {/* Doc table */}
-          {!loading && !hasNoDocs && !showEmptySearch && !showEmptyFilter && filtered.length > 0 && (
+          {!loading && !hasNoDocs && !showEmptySearch && !showEmptyFilter && pagedDocs.length > 0 && (
             <div className="overflow-hidden rounded-lg border bg-background">
               <div className="overflow-x-auto">
                 <table className="min-w-[960px] w-full text-sm">

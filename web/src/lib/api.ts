@@ -165,6 +165,57 @@ class ApiClient {
     return res.data;
   }
 
+  /**
+   * 文档分页查询 (服务端分页)
+   * @param kbId 知识库 ID
+   * @param params { page, pageSize, q?, status?, sort? }
+   * @returns DocumentPageResponse { items, total, page, page_size, counts? }
+   */
+  async getDocumentsPage(
+    kbId: string,
+    params: { page: number; pageSize: number; q?: string; status?: string; sort?: string }
+  ) {
+    if (MOCK_MODE) {
+      // MOCK 模式: 模拟一页 5 条, 让前端能正常跑分页逻辑
+      const all = [
+        { id: "1", title: "员工手册.pdf", file_type: "pdf", file_size: 102400, status: "ready", chunk_count: 0, created_at: "2026-07-01T10:00:00Z" },
+        { id: "2", title: "考勤制度.docx", file_type: "docx", file_size: 51200, status: "ready", chunk_count: 0, created_at: "2026-07-02T10:00:00Z" },
+        { id: "3", title: "产品白皮书.md", file_type: "md", file_size: 25600, status: "indexing", chunk_count: 0, created_at: "2026-07-03T10:00:00Z" },
+        { id: "4", title: "销售话术.txt", file_type: "txt", file_size: 8192, status: "pending", chunk_count: 0, created_at: "2026-07-04T10:00:00Z" },
+        { id: "5", title: "财务手册.pdf", file_type: "pdf", file_size: 204800, status: "error", chunk_count: 0, created_at: "2026-07-05T10:00:00Z" },
+      ];
+      const page = Math.max(1, params.page);
+      const pageSize = params.pageSize;
+      const start = (page - 1) * pageSize;
+      const items = all.slice(start, start + pageSize);
+      return {
+        items,
+        total: all.length,
+        page,
+        page_size: pageSize,
+        counts: { all: all.length, ready: 2, indexing: 2, error: 1 },
+      };
+    }
+    const query = new URLSearchParams();
+    query.set("with_total", "true");
+    query.set("page", String(params.page));
+    query.set("page_size", String(params.pageSize));
+    if (params.q) query.set("q", params.q);
+    if (params.status) query.set("status", params.status);
+    if (params.sort) query.set("sort", params.sort);
+    const res = await this.request<{
+      code: number;
+      data: {
+        items: any[];
+        total: number;
+        page: number;
+        page_size: number;
+        counts?: { all: number; ready: number; indexing: number; error: number };
+      };
+    }>(`/api/kb/${kbId}/docs?${query.toString()}`);
+    return res.data;
+  }
+
   async uploadDocument(kbId: string, file: File) {
     if (MOCK_MODE) {
       return { id: String(Date.now()), title: file.name, status: "pending" };
