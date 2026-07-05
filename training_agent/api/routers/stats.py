@@ -10,7 +10,7 @@ import uuid
 
 from fastapi import APIRouter
 import httpx
-from sqlalchemy import select, func, distinct, cast, Date, case
+from sqlalchemy import select, func, distinct, cast, Date, case, text
 
 from api.deps import DBSession, CurrentUser
 from api.schemas.common import Response
@@ -254,7 +254,7 @@ async def get_agent_metrics(
         .select_from(AgentRun)
         .join(Conversation, AgentRun.conversation_id == Conversation.id)
         .where(*run_scope, AgentRun.last_error.isnot(None), AgentRun.last_error != "")
-        .group_by(func.split_part(AgentRun.last_error, ":", 1))
+        .group_by(text("split_part(agent_runs.last_error, ':', 1)"))
         .order_by(func.count(AgentRun.id).desc())
     )
     error_type_distribution = {
