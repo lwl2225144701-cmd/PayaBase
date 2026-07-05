@@ -31,7 +31,19 @@ const iconThemes = [
   "bg-emerald-50 text-emerald-600 border-emerald-100 dark:bg-emerald-950/50 dark:text-emerald-400 dark:border-emerald-800/50",
 ];
 
-function KBCardSkeleton() {
+function KBCardSkeleton({ compact = false }: { compact?: boolean }) {
+  if (compact) {
+    return (
+      <div className="flex min-h-[96px] animate-pulse items-center gap-4 rounded-lg border border-border/60 bg-background/70 px-5 py-3">
+        <div className="h-10 w-10 shrink-0 rounded-lg bg-muted" />
+        <div className="flex-1 space-y-2">
+          <div className="h-4 w-1/3 rounded bg-muted" />
+          <div className="h-3 w-1/2 rounded bg-muted/70" />
+        </div>
+        <div className="h-8 w-16 rounded bg-muted/60" />
+      </div>
+    );
+  }
   return (
     <div className="h-[230px] animate-pulse rounded-lg border border-border/60 bg-background/70 p-5">
       <div className="flex items-start justify-between">
@@ -63,6 +75,7 @@ export default function KBListPage() {
   const [departmentDropdownOpen, setDepartmentDropdownOpen] = useState(false);
   const [formDepartmentDropdownOpen, setFormDepartmentDropdownOpen] = useState(false);
   const [newKB, setNewKB] = useState({ name: "", description: "", department_id: "" });
+  const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const departmentDropdownRef = useRef<HTMLDivElement>(null);
   const formDepartmentDropdownRef = useRef<HTMLDivElement>(null);
 
@@ -293,10 +306,32 @@ export default function KBListPage() {
                 </button>
               )}
             </div>
-            <Button variant="outline" size="icon" className="hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm opacity-50 md:inline-flex" disabled title="网格视图">
+            <Button
+              variant="outline"
+              size="icon"
+              type="button"
+              onClick={() => setViewMode("grid")}
+              title="网格视图"
+              className={`hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm transition-colors md:inline-flex ${
+                viewMode === "grid"
+                  ? "border-primary/30 bg-primary/10 text-primary hover:bg-primary/10"
+                  : "hover:border-primary/30"
+              }`}
+            >
               <Grid3X3Icon className="h-4 w-4" />
             </Button>
-            <Button variant="outline" size="icon" className="hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm opacity-50 md:inline-flex" disabled title="列表视图">
+            <Button
+              variant="outline"
+              size="icon"
+              type="button"
+              onClick={() => setViewMode("list")}
+              title="列表视图"
+              className={`hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm transition-colors md:inline-flex ${
+                viewMode === "list"
+                  ? "border-primary/30 bg-primary/10 text-primary hover:bg-primary/10"
+                  : "hover:border-primary/30"
+              }`}
+            >
               <LayoutListIcon className="h-4 w-4" />
             </Button>
           </div>
@@ -406,9 +441,15 @@ export default function KBListPage() {
       <div className="relative z-0 min-h-0 flex-1 overflow-y-auto px-6 py-5">
         {/* Loading */}
         {loading && (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <KBCardSkeleton key={i} />
+          <div
+            className={
+              viewMode === "grid"
+                ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
+                : "flex flex-col gap-3"
+            }
+          >
+            {Array.from({ length: viewMode === "grid" ? 8 : 5 }).map((_, i) => (
+              <KBCardSkeleton key={i} compact={viewMode === "list"} />
             ))}
           </div>
         )}
@@ -467,90 +508,212 @@ export default function KBListPage() {
           </div>
         )}
 
-        {/* Card grid */}
+        {/* Card grid / list */}
         {!loading && visibleKbs && visibleKbs.length > 0 && (
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
-            {visibleKbs.map((kb: KnowledgeBase, index: number) => (
-              <Card
-                key={kb.id}
-                className="group flex min-h-[224px] flex-col overflow-hidden border-border/60 bg-background/80 shadow-sm transition-shadow hover:shadow-md"
-              >
-                <CardHeader className="flex-1 pb-0 pt-5">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${iconThemes[index % iconThemes.length]}`}>
-                      <FileTextIcon className="h-4 w-4" />
-                    </div>
-                    <Badge
-                      variant={kb.department_id ? "secondary" : "outline"}
-                      className="max-w-[100px] truncate rounded-md px-2 py-0.5 text-xs font-normal"
-                    >
-                      {kb.department_name || "公共"}
-                    </Badge>
-                  </div>
-                  <div className="pt-5">
-                    <CardTitle className="line-clamp-1 text-base leading-snug">{kb.name}</CardTitle>
-                    <CardDescription className="mt-2 line-clamp-2 min-h-[36px] text-xs leading-5">
-                      {kb.description || "暂无描述"}
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-
-                <CardContent className="pt-5">
-                  <div className="grid grid-cols-2 gap-2">
-                    <div className="min-w-0">
-                      <div className="whitespace-nowrap text-lg font-semibold tracking-tight">{kb.doc_count || 0}</div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">文档</div>
-                    </div>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-medium">
-                        {kb.can_manage ? (
-                          <span className="text-emerald-600 dark:text-emerald-400">可管理</span>
-                        ) : (
-                          <span className="text-muted-foreground">只读</span>
+          <div
+            className={
+              viewMode === "grid"
+                ? "grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
+                : "flex flex-col gap-3"
+            }
+          >
+            {visibleKbs.map((kb: KnowledgeBase, index: number) => {
+              const isListMode = viewMode === "list";
+              return (
+                <Card
+                  key={kb.id}
+                  className={
+                    isListMode
+                      ? "group flex min-h-[96px] flex-row items-stretch overflow-hidden border-border/60 bg-background/80 p-0 shadow-sm transition-shadow hover:shadow-md"
+                      : "group flex min-h-[224px] flex-col overflow-hidden border-border/60 bg-background/80 shadow-sm transition-shadow hover:shadow-md"
+                  }
+                >
+                  {isListMode ? (
+                    // ====== List 模式: 横向三段布局 ======
+                    <>
+                      <div className="flex shrink-0 items-center pl-5 pr-4">
+                        <div
+                          className={`flex h-10 w-10 items-center justify-center rounded-lg border ${iconThemes[index % iconThemes.length]}`}
+                        >
+                          <FileTextIcon className="h-4 w-4" />
+                        </div>
+                      </div>
+                      <div className="flex min-w-0 flex-1 flex-col justify-center py-3 pr-4">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate text-sm font-semibold leading-snug">
+                            {kb.name}
+                          </span>
+                          <Badge
+                            variant={kb.department_id ? "secondary" : "outline"}
+                            className="max-w-[100px] shrink-0 truncate rounded-md px-2 py-0.5 text-xs font-normal"
+                          >
+                            {kb.department_name || "公共"}
+                          </Badge>
+                        </div>
+                        {kb.description && (
+                          <p className="mt-1 line-clamp-1 text-xs leading-5 text-muted-foreground">
+                            {kb.description}
+                          </p>
                         )}
                       </div>
-                      <div className="mt-0.5 text-xs text-muted-foreground">权限</div>
-                    </div>
-                  </div>
+                      <div className="flex shrink-0 items-center gap-6 px-5 text-xs">
+                        <div className="flex flex-col items-end">
+                          <div className="text-sm font-semibold tracking-tight text-foreground">
+                            {kb.doc_count || 0}
+                          </div>
+                          <div className="mt-0.5 text-muted-foreground">文档</div>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <div className="text-sm font-medium">
+                            {kb.can_manage ? (
+                              <span className="text-emerald-600 dark:text-emerald-400">可管理</span>
+                            ) : (
+                              <span className="text-muted-foreground">只读</span>
+                            )}
+                          </div>
+                          <div className="mt-0.5 text-muted-foreground">权限</div>
+                        </div>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1 border-l pl-3 pr-3">
+                        <Link
+                          href={`/kb/${kb.id}`}
+                          className="text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline"
+                        >
+                          进入管理
+                        </Link>
+                        {kb.can_manage ? (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                            onClick={() => handleDelete(kb.id)}
+                            title="删除知识库"
+                          >
+                            <TrashIcon className="h-4 w-4" />
+                          </Button>
+                        ) : (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8"
+                            disabled
+                            title="无管理权限"
+                          >
+                            <LockIcon className="h-4 w-4 text-muted-foreground/40" />
+                          </Button>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    // ====== Grid 模式: 保持原有卡片结构 ======
+                    <>
+                      <CardHeader className="flex-1 pb-0 pt-5">
+                        <div className="flex items-start justify-between gap-3">
+                          <div
+                            className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg border ${iconThemes[index % iconThemes.length]}`}
+                          >
+                            <FileTextIcon className="h-4 w-4" />
+                          </div>
+                          <Badge
+                            variant={kb.department_id ? "secondary" : "outline"}
+                            className="max-w-[100px] truncate rounded-md px-2 py-0.5 text-xs font-normal"
+                          >
+                            {kb.department_name || "公共"}
+                          </Badge>
+                        </div>
+                        <div className="pt-5">
+                          <CardTitle className="line-clamp-1 text-base leading-snug">
+                            {kb.name}
+                          </CardTitle>
+                          <CardDescription className="mt-2 line-clamp-2 min-h-[36px] text-xs leading-5">
+                            {kb.description || "暂无描述"}
+                          </CardDescription>
+                        </div>
+                      </CardHeader>
 
-                  <div className="mt-4 flex items-center justify-between border-t pt-4">
-                    <Link
-                      href={`/kb/${kb.id}`}
-                      className="text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline"
-                    >
-                      进入管理
-                    </Link>
-                    {kb.can_manage ? (
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                        onClick={() => handleDelete(kb.id)}
-                        title="删除知识库"
-                      >
-                        <TrashIcon className="h-4 w-4" />
-                      </Button>
-                    ) : (
-                      <Button variant="ghost" size="icon" className="h-8 w-8" disabled title="无管理权限">
-                        <LockIcon className="h-4 w-4 text-muted-foreground/40" />
-                      </Button>
-                    )}
-                  </div>
-                </CardContent>
-              </Card>
-            ))}
+                      <CardContent className="pt-5">
+                        <div className="grid grid-cols-2 gap-2">
+                          <div className="min-w-0">
+                            <div className="whitespace-nowrap text-lg font-semibold tracking-tight">
+                              {kb.doc_count || 0}
+                            </div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">文档</div>
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">
+                              {kb.can_manage ? (
+                                <span className="text-emerald-600 dark:text-emerald-400">可管理</span>
+                              ) : (
+                                <span className="text-muted-foreground">只读</span>
+                              )}
+                            </div>
+                            <div className="mt-0.5 text-xs text-muted-foreground">权限</div>
+                          </div>
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between border-t pt-4">
+                          <Link
+                            href={`/kb/${kb.id}`}
+                            className="text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline"
+                          >
+                            进入管理
+                          </Link>
+                          {kb.can_manage ? (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                              onClick={() => handleDelete(kb.id)}
+                              title="删除知识库"
+                            >
+                              <TrashIcon className="h-4 w-4" />
+                            </Button>
+                          ) : (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              disabled
+                              title="无管理权限"
+                            >
+                              <LockIcon className="h-4 w-4 text-muted-foreground/40" />
+                            </Button>
+                          )}
+                        </div>
+                      </CardContent>
+                    </>
+                  )}
+                </Card>
+              );
+            })}
 
             {canManageKnowledgeBases && (
               <button
                 type="button"
                 onClick={() => setShowForm(true)}
-                className="flex min-h-[224px] flex-col items-center justify-center rounded-lg border border-dashed border-primary/15 bg-background/40 p-6 text-center shadow-sm transition-all hover:border-primary/30 hover:bg-background/60"
+                className={
+                  viewMode === "list"
+                    ? "flex min-h-[96px] flex-row items-center justify-center gap-3 rounded-lg border border-dashed border-primary/15 bg-background/40 px-5 text-left shadow-sm transition-all hover:border-primary/30 hover:bg-background/60"
+                    : "flex min-h-[224px] flex-col items-center justify-center rounded-lg border border-dashed border-primary/15 bg-background/40 p-6 text-center shadow-sm transition-all hover:border-primary/30 hover:bg-background/60"
+                }
               >
-                <div className="flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <div
+                  className={
+                    viewMode === "list"
+                      ? "flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary"
+                      : "flex h-11 w-11 items-center justify-center rounded-full bg-primary/10 text-primary"
+                  }
+                >
                   <PlusIcon className="h-5 w-5" />
                 </div>
-                <div className="mt-4 text-sm font-medium">创建知识库</div>
-                <div className="mt-1.5 text-xs text-muted-foreground">导入文档，构建专属知识库</div>
+                <div className={viewMode === "list" ? "" : "mt-4"}>
+                  <div className="text-sm font-medium">创建知识库</div>
+                  {viewMode !== "list" && (
+                    <div className="mt-1.5 text-xs text-muted-foreground">
+                      导入文档，构建专属知识库
+                    </div>
+                  )}
+                </div>
               </button>
             )}
           </div>
