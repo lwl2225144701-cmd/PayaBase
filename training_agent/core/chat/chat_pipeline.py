@@ -17,10 +17,18 @@ from api.schemas.chat import ChatStreamChunk
 from core.config import settings
 from core.exceptions import NotFoundException, ValidationException
 from core.chat.rag_flow import RagRetrievalRequest, retrieve_chat_context
-from core.agent.orchestrator import AgentOrchestrator
-from core.agent.request_router import RequestRouter
-from core.agent.strategy import select_task_profile
+from core.llm.factory import get_llm_client
+from core.chat.routing_flow import (
+    RoutingRequest,
+    initialize_chat_routing,
+)
 from core.chat.stream_events import format_sse_chunk
+from core.agent.persistence import (
+    persist_initial_agent_run,
+    persist_agent_step_result,
+    update_main_step_output,
+    persist_finalize_step,
+)
 from core.chat.attachment_service import parse_attachments
 from core.chat.conversation_service import (
     validate_conversation,
@@ -34,13 +42,6 @@ from core.chat.web_search_state import (
 )
 from core.chat.chat_context import build_material_text
 from core.chat.chat_state import ChatRuntimeState
-from core.llm.factory import get_llm_client
-from core.agent.persistence import (
-    persist_initial_agent_run,
-    persist_agent_step_result,
-    update_main_step_output,
-    persist_finalize_step,
-)
 from core.chat.artifact_flow import (
     ArtifactStepContext,
     ArtifactGenerationRequest,
@@ -202,35 +203,21 @@ async def handle_chat(
             timings["visible_kb_ms"] = int((time.time() - t0) * 1000)
             logger.info(f"[Timing] 查询知识库列表: {timings['visible_kb_ms']}ms, count={len(all_kbs)}")
 
-            t0 = time.time()
-            # 业务层不再感知 provider / api_key / base_url,统一通过工厂取
-            router_llm = get_llm_client("classify")
-            router = RequestRouter(router_llm)
-            orchestrator = AgentOrchestrator(router)
-            agent_run_state, agent_plan = await orchestrator.start_run(
-                query=message,
-                has_attachments=bool(all_attachments),
-                has_active_kb=bool(state.active_kb_id),
-            )
-            route_decision = agent_run_state.route_decision
-            if route_decision is None:
-                route_decision = await router.decide(
+            routing_result = await initialize_chat_routing(
+                request=RoutingRequest(
                     query=message,
                     has_attachments=bool(all_attachments),
                     has_active_kb=bool(state.active_kb_id),
-                )
-                agent_run_state.route_decision = route_decision
-                agent_run_state.plan_snapshot = {
-                    "steps": [{"step_id": "step-1", "step_type": route_decision.route, "step_goal": f"execute_{route_decision.route}"}],
-                    "route": route_decision.route,
-                }
-
-            first_step = (
-                agent_plan["steps"][0]
-                if agent_plan.get("steps")
-                else {"step_id": "step-1", "step_type": route_decision.route, "step_goal": f"execute_{route_decision.route}"}
+                ),
             )
-            agent_step_state = orchestrator.runner.start_step(agent_run_state, first_step)
+
+            orchestrator = routing_result.orchestrator
+            agent_run_state = routing_result.agent_run_state
+            agent_step_state = routing_result.agent_step_state
+            route_decision = routing_result.route_decision
+            task_profile = routing_result.task_profile
+            timings.update(routing_result.timings)
+
             persistence_ids = await persist_initial_agent_run(
                 db=db,
                 tenant_id=current_user.tenant_id,
@@ -240,7 +227,7 @@ async def handle_chat(
                 agent_run_state=agent_run_state,
                 agent_step_state=agent_step_state,
             )
-            timings["routing_ms"] = int((time.time() - t0) * 1000)
+
             logger.info(
                 f"[Timing] 路由决策完成: {timings['routing_ms']}ms, "
                 f"route={route_decision.route}, source={route_decision.decision_source}"
@@ -248,21 +235,6 @@ async def handle_chat(
             logger.info(
                 f"[Route] route={route_decision.route}, source={route_decision.decision_source}, "
                 f"reason={route_decision.reason}, confidence={route_decision.confidence:.2f}"
-            )
-            task_profile = select_task_profile(
-                route=route_decision.route,
-                query=message,
-            )
-            agent_step_state.tool_trace.append(
-                {
-                    "type": "task_profile",
-                    "goal_type": task_profile.goal_type,
-                    "content_type": task_profile.content_type,
-                    "evidence_policy": task_profile.evidence_policy,
-                    "artifact_required": task_profile.artifact_required,
-                    "artifact_tool": task_profile.artifact_tool,
-                    "completion_condition": task_profile.completion_condition,
-                }
             )
 
             chunks_data = state.chunks_data
