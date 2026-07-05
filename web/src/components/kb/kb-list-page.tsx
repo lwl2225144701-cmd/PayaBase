@@ -556,25 +556,21 @@ export default function KBListPage() {
                           </p>
                         )}
                       </div>
-                      <div className="flex shrink-0 items-center gap-6 px-5 text-xs">
-                        <div className="flex flex-col items-end">
-                          <div className="text-sm font-semibold tracking-tight text-foreground">
-                            {kb.doc_count || 0}
-                          </div>
-                          <div className="mt-0.5 text-muted-foreground">文档</div>
+                      <div className="flex shrink-0 items-center gap-2 border-l pl-3 pr-3">
+                        <div className="hidden items-center gap-2 lg:flex">
+                          <span className="rounded-md bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground">
+                            {kb.doc_count || 0} 个文档
+                          </span>
+                          <span
+                            className={`rounded-md px-2 py-0.5 text-xs ${
+                              kb.can_manage
+                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                : "bg-muted/50 text-muted-foreground"
+                            }`}
+                          >
+                            {kb.can_manage ? "可管理" : "只读"}
+                          </span>
                         </div>
-                        <div className="flex flex-col items-end">
-                          <div className="text-sm font-medium">
-                            {kb.can_manage ? (
-                              <span className="text-emerald-600 dark:text-emerald-400">可管理</span>
-                            ) : (
-                              <span className="text-muted-foreground">只读</span>
-                            )}
-                          </div>
-                          <div className="mt-0.5 text-muted-foreground">权限</div>
-                        </div>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1 border-l pl-3 pr-3">
                         <Link
                           href={`/kb/${kb.id}`}
                           className="text-sm font-medium text-primary transition-colors hover:text-primary/80 hover:underline"
@@ -632,23 +628,19 @@ export default function KBListPage() {
                       </CardHeader>
 
                       <CardContent className="pt-5">
-                        <div className="grid grid-cols-2 gap-2">
-                          <div className="min-w-0">
-                            <div className="whitespace-nowrap text-lg font-semibold tracking-tight">
-                              {kb.doc_count || 0}
-                            </div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">文档</div>
-                          </div>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium">
-                              {kb.can_manage ? (
-                                <span className="text-emerald-600 dark:text-emerald-400">可管理</span>
-                              ) : (
-                                <span className="text-muted-foreground">只读</span>
-                              )}
-                            </div>
-                            <div className="mt-0.5 text-xs text-muted-foreground">权限</div>
-                          </div>
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          <span className="rounded-md bg-muted/50 px-2.5 py-1 text-xs text-muted-foreground">
+                            {kb.doc_count || 0} 个文档
+                          </span>
+                          <span
+                            className={`rounded-md px-2.5 py-1 text-xs ${
+                              kb.can_manage
+                                ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                                : "bg-muted/50 text-muted-foreground"
+                            }`}
+                          >
+                            {kb.can_manage ? "可管理" : "只读"}
+                          </span>
                         </div>
 
                         <div className="mt-4 flex items-center justify-between border-t pt-4">
