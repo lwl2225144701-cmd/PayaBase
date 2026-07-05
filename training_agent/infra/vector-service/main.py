@@ -80,12 +80,6 @@ class EmbedResponse(BaseModel):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    if model is None:
-        from fastapi.responses import JSONResponse
-        return JSONResponse(
-            status_code=503,
-            content={"status": "loading", "model": MODEL_NAME},
-        )
     return {"status": "ok", "model": MODEL_NAME}
 
 
