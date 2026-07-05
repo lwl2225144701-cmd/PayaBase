@@ -88,11 +88,11 @@ export default function KBListPage() {
   const baseFilteredKbs = useMemo(() => {
     if (!kbs) return [];
     if (departmentFilter === "all") return kbs;
-    return kbs.filter((kb: KnowledgeBase) =>
-      departmentFilter === "public"
-        ? !kb.department_id
-        : kb.department_id === departmentFilter
-    );
+    return kbs.filter((kb: KnowledgeBase) => {
+      if (departmentFilter === "public") return !kb.department_id;
+      if (departmentFilter === "private") return !!kb.department_id;
+      return kb.department_id === departmentFilter;
+    });
   }, [kbs, departmentFilter]);
 
   const visibleKbs = useMemo(() => {
@@ -164,13 +164,8 @@ export default function KBListPage() {
 
   // ---- 渲染 ----
   const hasNoKbs = !isLoading && (!kbs || kbs.length === 0);
-  const showEmptySearch = !isLoading && normalizedKeyword && baseFilteredKbs.length > 0 && visibleKbs.length === 0;
-  const showEmptyFilter =
-    !isLoading &&
-    !normalizedKeyword &&
-    !hasNoKbs &&
-    visibleKbs.length === 0;
   const loading = isLoading || userLoading;
+  const showEmptyResult = !loading && !hasNoKbs && visibleKbs.length === 0;
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[radial-gradient(800px_circle_at_0%_0%,rgba(99,102,241,0.06),transparent_55%)]">
@@ -224,9 +219,17 @@ export default function KBListPage() {
             >
               公共 <span className="ml-1.5 text-xs opacity-60">{publicCount}</span>
             </button>
-            <span className="h-9 rounded-lg px-4 pt-2 text-sm font-medium text-muted-foreground/50">
+            <button
+              type="button"
+              onClick={() => setDepartmentFilter("private")}
+              className={`h-9 rounded-lg px-4 text-sm font-medium transition-colors ${
+                departmentFilter === "private"
+                  ? "bg-primary/10 text-primary"
+                  : "text-muted-foreground hover:bg-muted hover:text-foreground"
+              }`}
+            >
               私有 <span className="ml-1.5 text-xs opacity-60">{privateCount}</span>
-            </span>
+            </button>
 
             {isSuperAdmin && (
               <div ref={departmentDropdownRef} className="relative">
@@ -272,13 +275,13 @@ export default function KBListPage() {
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="relative flex-1 md:w-[280px] md:flex-none">
+            <div className="relative min-w-0 flex-1 md:w-[280px] md:flex-none">
               <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <input
                 value={searchKeyword}
                 onChange={(e) => setSearchKeyword(e.target.value)}
                 placeholder="搜索知识库…"
-                className="h-9 w-full rounded-lg border border-input bg-background/70 pl-9 pr-8 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
+                className="h-9 w-full min-w-0 rounded-lg border border-input bg-background/70 pl-9 pr-8 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
               />
               {searchKeyword && (
                 <button
@@ -290,10 +293,10 @@ export default function KBListPage() {
                 </button>
               )}
             </div>
-            <Button variant="outline" size="icon" className="h-9 w-9 bg-background/70 shadow-sm opacity-50" disabled title="网格视图">
+            <Button variant="outline" size="icon" className="hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm opacity-50 md:inline-flex" disabled title="网格视图">
               <Grid3X3Icon className="h-4 w-4" />
             </Button>
-            <Button variant="outline" size="icon" className="h-9 w-9 bg-background/70 shadow-sm opacity-50" disabled title="列表视图">
+            <Button variant="outline" size="icon" className="hidden h-9 w-9 shrink-0 bg-background/70 shadow-sm opacity-50 md:inline-flex" disabled title="列表视图">
               <LayoutListIcon className="h-4 w-4" />
             </Button>
           </div>
@@ -437,28 +440,29 @@ export default function KBListPage() {
           </div>
         )}
 
-        {/* Empty: search has results but filtered to nothing */}
-        {!loading && showEmptySearch && (
+        {/* Empty: search or filter returns nothing (统一空结果) */}
+        {!loading && showEmptyResult && (
           <div className="flex flex-col items-center justify-center py-20 text-center">
-            <p className="text-sm text-muted-foreground">没有找到匹配的知识库</p>
-            <button
-              type="button"
-              onClick={() => setSearchKeyword("")}
-              className="mt-3 text-sm text-primary hover:underline"
-            >
-              清空搜索词
-            </button>
-          </div>
-        )}
-
-        {/* Empty: filter (department / public) returns nothing */}
-        {!loading && showEmptyFilter && (
-          <div className="flex flex-col items-center justify-center py-20 text-center">
-            <p className="text-sm text-muted-foreground">当前筛选下暂无知识库</p>
-            {canManageKnowledgeBases && (
-              <p className="mt-2 max-w-sm text-xs text-muted-foreground/80">
-                可以切换筛选条件,或创建新的知识库。
-              </p>
+            {normalizedKeyword ? (
+              <>
+                <p className="text-sm text-muted-foreground">没有找到匹配的知识库</p>
+                <button
+                  type="button"
+                  onClick={() => setSearchKeyword("")}
+                  className="mt-3 text-sm text-primary hover:underline"
+                >
+                  清空搜索词
+                </button>
+              </>
+            ) : (
+              <>
+                <p className="text-sm text-muted-foreground">当前筛选下暂无知识库</p>
+                {canManageKnowledgeBases && (
+                  <p className="mt-2 max-w-sm text-xs text-muted-foreground/80">
+                    可以切换筛选条件,或创建新的知识库。
+                  </p>
+                )}
+              </>
             )}
           </div>
         )}
