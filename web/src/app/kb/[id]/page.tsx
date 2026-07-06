@@ -17,6 +17,7 @@ import {
   FileIcon,
   FileTextIcon,
   FlaskConicalIcon,
+  HistoryIcon,
   InfoIcon,
   Loader2,
   LockIcon,
@@ -1029,6 +1030,19 @@ type RetrievalResult = {
   timings: RetrievalTimings;
 };
 
+type RetrievalHistoryItem = {
+  id: string;
+  query: string;
+  createdAt: string;
+  topK: number;
+  threshold: number;
+  useRerank: boolean;
+  resultCount: number;
+  topScore?: number;
+  avgScore?: number;
+  totalMs?: number;
+};
+
 function scoreColor(score: number): string {
   if (score >= 0.7) return "bg-emerald-500";
   if (score >= 0.4) return "bg-blue-500";
@@ -1077,6 +1091,15 @@ async function copyToClipboard(text: string) {
   }
 }
 
+function RetrievalSummaryCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-lg border bg-background p-3">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="mt-1 text-xl font-semibold tabular-nums text-foreground">{value}</div>
+    </div>
+  );
+}
+
 function RetrievalTestPanel({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
@@ -1084,6 +1107,7 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
   const [useRerank, setUseRerank] = useState(true);
   const retrieval = useRetrievalTest();
   const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
+  const [history, setHistory] = useState<RetrievalHistoryItem[]>([]);
 
   const result = retrieval.data as RetrievalResult | undefined;
   const items = result?.items || [];
@@ -1096,10 +1120,46 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
   const onSubmit = () => {
     const q = query.trim();
     if (!q) return;
-    retrieval.mutate({
-      kbId,
-      body: { query: q, top_k: topK, threshold, use_rerank: useRerank },
-    });
+    retrieval.mutate(
+      {
+        kbId,
+        body: { query: q, top_k: topK, threshold, use_rerank: useRerank },
+      },
+      {
+        onSuccess: (data: any) => {
+          const dataItems: any[] = data?.items || [];
+          const scores = dataItems.map((i) => i.score || 0);
+          const topScore = scores.length ? Math.max(...scores) : undefined;
+          const avgScore = scores.length
+            ? scores.reduce((a, b) => a + b, 0) / scores.length
+            : undefined;
+          setHistory((prev) =>
+            [
+              {
+                id: `${Date.now()}`,
+                query: q,
+                createdAt: new Date().toISOString(),
+                topK,
+                threshold,
+                useRerank,
+                resultCount: dataItems.length,
+                topScore,
+                avgScore,
+                totalMs: data?.timings?.total_ms,
+              },
+              ...prev,
+            ].slice(0, 20)
+          );
+        },
+      }
+    );
+  };
+
+  const onPickHistory = (item: RetrievalHistoryItem) => {
+    setQuery(item.query);
+    setTopK(item.topK);
+    setThreshold(item.threshold);
+    setUseRerank(item.useRerank);
   };
 
   const rerankDecision = timings?.rerank_decision;
@@ -1118,70 +1178,81 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
     { label: "总耗时", value: timings?.total_ms, suffix: "ms" },
   ];
 
+  const resultCount = items.length;
+  const topScore = items.length ? Math.max(...items.map((i) => i.score || 0)) : 0;
+  const avgScore = items.length
+    ? items.reduce((s, i) => s + (i.score || 0), 0) / items.length
+    : 0;
+  const docCount = new Set(items.map((i) => i.document_id).filter(Boolean)).size;
+  const showLowTop = items.length > 0 && topScore < 0.3;
+  const showLowAvg = items.length > 0 && avgScore < 0.25;
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      {/* Control panel */}
-      <div className="border-b px-6 py-5">
-        <div className="mx-auto max-w-3xl">
+    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[360px_1fr]">
+      {/* Left: control + history */}
+      <aside className="border-r bg-muted/10 overflow-y-auto px-4 py-5">
           <div className="flex items-center gap-2">
             <FlaskConicalIcon className="h-4 w-4 text-primary" />
-            <h1 className="text-lg font-semibold">召回测试</h1>
+            <h1 className="text-base font-semibold">召回测试</h1>
             <Badge variant="secondary" className="rounded-md px-2 py-0.5 text-[10px] font-normal">
               MVP
             </Badge>
           </div>
-          <p className="mt-1 text-sm text-muted-foreground">
-            输入查询语句，实时查看向量召回的分块与耗时，不影响正式聊天链路。
+          <p className="mt-1.5 text-xs leading-5 text-muted-foreground">
+            输入问题，查看当前知识库实际召回的分块、分数和耗时。
           </p>
 
           <textarea
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            rows={3}
+            rows={4}
             placeholder="例如: 如何申请报销?"
             className="mt-4 w-full resize-none rounded-lg border border-input bg-background/70 p-3 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
           />
 
-          <div className="mt-3 flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              召回数量
-              <select
-                value={topK}
-                onChange={(e) => setTopK(Number(e.target.value))}
-                className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
-              >
-                {[3, 5, 10, 20].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </label>
+          <div className="mt-3 space-y-3">
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                召回数量
+                <select
+                  value={topK}
+                  onChange={(e) => setTopK(Number(e.target.value))}
+                  className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
+                >
+                  {[3, 5, 10, 20].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
-            <label className="flex items-center gap-2 text-sm text-muted-foreground">
-              相似度阈值
-              <select
-                value={threshold}
-                onChange={(e) => setThreshold(Number(e.target.value))}
-                className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
-              >
-                {[0.1, 0.2, 0.3, 0.5].map((t) => (
-                  <option key={t} value={t}>
-                    {t}
-                  </option>
-                ))}
-              </select>
-            </label>
+              <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                阈值
+                <select
+                  value={threshold}
+                  onChange={(e) => setThreshold(Number(e.target.value))}
+                  className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
+                >
+                  {[0.1, 0.2, 0.3, 0.5].map((t) => (
+                    <option key={t} value={t}>
+                      {t}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
 
             <button
               type="button"
               onClick={() => setUseRerank((v) => !v)}
-              className={`flex h-8 items-center gap-2 rounded-md border px-3 text-sm transition-colors ${
+              className={`flex h-8 w-full items-center justify-between rounded-md border px-3 text-sm transition-colors ${
                 useRerank
                   ? "border-primary/40 bg-primary/10 text-primary"
                   : "border-input text-muted-foreground"
               }`}
             >
+              <span>重排序</span>
               <span
                 className={`flex h-3.5 w-6 items-center rounded-full p-0.5 transition-colors ${
                   useRerank ? "bg-primary" : "bg-muted"
@@ -1193,13 +1264,12 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                   }`}
                 />
               </span>
-              重排序
             </button>
 
             <Button
               onClick={onSubmit}
               disabled={!query.trim() || retrieval.isPending}
-              className="ml-auto h-9 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-4 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+              className="h-9 w-full rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
             >
               {retrieval.isPending ? (
                 <>
@@ -1214,12 +1284,55 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
               )}
             </Button>
           </div>
-        </div>
-      </div>
 
-      {/* Results */}
-      <div className="relative z-0 min-h-0 flex-1 overflow-y-auto px-6 py-5">
-        <div className="mx-auto max-w-3xl">
+          {/* History */}
+          <div className="mt-6">
+            <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <HistoryIcon className="h-3.5 w-3.5" />
+              测试历史
+              {history.length > 0 && (
+                <span className="text-[10px]">({history.length})</span>
+              )}
+            </div>
+            {history.length === 0 ? (
+              <p className="mt-2 text-[11px] leading-4 text-muted-foreground/70">
+                测试后将在此保留最近 20 条记录。
+              </p>
+            ) : (
+              <div className="mt-2 space-y-1.5">
+                {history.map((h) => (
+                  <button
+                    key={h.id}
+                    type="button"
+                    onClick={() => onPickHistory(h)}
+                    title="点击回填参数"
+                    className="group block w-full rounded-lg border border-transparent bg-background/60 px-2.5 py-2 text-left transition-colors hover:border-primary/30 hover:bg-background"
+                  >
+                    <div className="flex items-center gap-2">
+                      <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">
+                        {h.query}
+                      </span>
+                      <span className="shrink-0 text-[10px] text-muted-foreground">
+                        {h.resultCount} 块
+                      </span>
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground">
+                      <span>Top {h.topScore !== undefined ? (h.topScore * 100).toFixed(0) : "—"}%</span>
+                      <span>·</span>
+                      <span>{h.totalMs !== undefined ? `${h.totalMs}ms` : "—"}</span>
+                      <span className="ml-auto">
+                        {new Date(h.createdAt).toLocaleTimeString()}
+                      </span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+      </aside>
+
+      {/* Right: results */}
+      <section className="min-w-0 overflow-y-auto px-6 py-5">
           {retrieval.isPending && (
             <div className="flex flex-col items-center justify-center py-20 text-center text-sm text-muted-foreground">
               <Loader2 className="mb-3 h-6 w-6 animate-spin text-primary" />
@@ -1258,6 +1371,25 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
 
           {!retrieval.isPending && !retrieval.isError && items.length > 0 && (
             <>
+              {/* Summary metrics */}
+              <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+                <RetrievalSummaryCard label="召回分块" value={String(resultCount)} />
+                <RetrievalSummaryCard label="命中文档" value={String(docCount)} />
+                <RetrievalSummaryCard label="Top1 分数" value={`${(topScore * 100).toFixed(1)}%`} />
+                <RetrievalSummaryCard label="平均分" value={`${(avgScore * 100).toFixed(1)}%`} />
+              </div>
+
+              {showLowTop && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/40 dark:text-amber-400">
+                  最高分较低，可能存在召回质量不足，建议降低阈值或检查文档索引质量。
+                </div>
+              )}
+              {showLowAvg && (
+                <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700 dark:border-amber-800/50 dark:bg-amber-950/40 dark:text-amber-400">
+                  平均分偏低，召回结果可能不稳定。
+                </div>
+              )}
+
               {/* Summary */}
               <div className="mb-4 rounded-lg border bg-background p-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1399,8 +1531,7 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
               </div>
             </>
           )}
-        </div>
+        </section>
       </div>
-    </div>
   );
 }
