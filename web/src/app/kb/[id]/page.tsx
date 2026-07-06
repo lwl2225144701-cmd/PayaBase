@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -30,7 +31,7 @@ import {
   UploadIcon,
   XIcon,
 } from "lucide-react";
-import { useDocumentsPage, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase, useRetrievalTest } from "@/hooks/use-api";
+import { useDocumentsPage, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase, useRetrievalTest, useUpdateKnowledgeBase, useDeleteKnowledgeBase } from "@/hooks/use-api";
 
 type StatusFilter = "all" | "ready" | "indexing" | "pending" | "error";
 type SortKey = "created_desc" | "created_asc" | "name_asc" | "name_desc";
@@ -227,7 +228,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [activeTab, setActiveTab] = useState<"documents" | "retrieval_test">("documents");
+  const [activeTab, setActiveTab] = useState<"documents" | "retrieval_test" | "settings">("documents");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
@@ -450,15 +451,18 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             <li>
               <button
                 type="button"
-                disabled
-                className="flex h-9 w-full items-center justify-between rounded-md px-3 text-sm text-muted-foreground/60"
-                title="即将推出"
+                onClick={() => setActiveTab("settings")}
+                className={`flex h-9 w-full items-center justify-between rounded-md px-3 text-sm font-medium ${
+                  activeTab === "settings"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
               >
                 <span className="flex items-center gap-2.5">
                   <SettingsIcon className="h-4 w-4" />
                   设置
                 </span>
-                <span className="text-[10px] uppercase tracking-wide opacity-70">soon</span>
+                <ChevronRightIcon className={`h-3.5 w-3.5 opacity-60 ${activeTab === "settings" ? "" : "hidden"}`} />
               </button>
             </li>
           </ul>
@@ -527,8 +531,10 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             showEmptyFilter={showEmptyFilter}
             fileInputRef={fileInputRef}
           />
-        ) : (
+        ) : activeTab === "retrieval_test" ? (
           <RetrievalTestPanel kbId={kbId} />
+        ) : (
+          <SettingsPanel kbId={kbId} kb={kb} canManage={canManage} />
         )}
       </main>
     </div>
@@ -995,6 +1001,244 @@ function DocumentsTabContent(props: DocumentsTabProps) {
             </div>
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+// ====== Settings Panel (MVP) ======
+function SettingsPanel({
+  kbId,
+  kb,
+  canManage,
+}: {
+  kbId: string;
+  kb: any;
+  canManage: boolean;
+}) {
+  const router = useRouter();
+  const updateMutation = useUpdateKnowledgeBase();
+  const deleteMutation = useDeleteKnowledgeBase();
+
+  const [name, setName] = useState(kb?.name ?? "");
+  const [description, setDescription] = useState(kb?.description ?? "");
+
+  // 后端数据刷新后, 同步本地编辑态 (保存成功后 kb 重新拉取)
+  useEffect(() => {
+    setName(kb?.name ?? "");
+    setDescription(kb?.description ?? "");
+  }, [kb?.id, kb?.name, kb?.description]);
+
+  if (!kb) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 py-5 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
+      </div>
+    );
+  }
+
+  const isDirty =
+    name !== (kb.name ?? "") || description !== (kb.description ?? "");
+  const canSave =
+    canManage && name.trim() !== "" && isDirty && !updateMutation.isPending;
+
+  const handleSave = () => {
+    if (!canSave) return;
+    updateMutation.mutate(
+      {
+        id: kbId,
+        data: { name: name.trim(), description: description.trim() },
+      },
+      {
+        onError: (e: any) => {
+          alert("保存失败: " + (e?.message || "未知错误"));
+        },
+      }
+    );
+  };
+
+  const handleDelete = () => {
+    if (!canManage) {
+      alert("无权限删除该知识库");
+      return;
+    }
+    if (
+      !confirm(
+        "确定删除该知识库？该操作会删除知识库及其文档索引，无法恢复。"
+      )
+    )
+      return;
+    deleteMutation.mutate(kbId, {
+      onSuccess: () => {
+        router.push("/kb");
+      },
+      onError: (e: any) => {
+        alert("删除失败: " + (e?.message || "未知错误"));
+      },
+    });
+  };
+
+  const departmentLabel = kb.department_name || "公共";
+  const inputBase =
+    "h-9 w-full rounded-md border border-input bg-background px-3 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60";
+
+  return (
+    <div className="overflow-y-auto px-6 py-5">
+      <div className="mx-auto max-w-3xl">
+        <div className="mb-6">
+          <h1 className="text-2xl font-semibold tracking-tight">设置</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            管理知识库基础信息和危险操作。
+          </p>
+        </div>
+
+        {/* 基础信息 */}
+        <section className="rounded-lg border bg-background p-5">
+          <h2 className="text-sm font-semibold">基础信息</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            知识库的名称与描述，仅管理员可修改。
+          </p>
+
+          <div className="mt-4 space-y-4">
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">知识库名称</label>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                disabled={!canManage || updateMutation.isPending}
+                placeholder="知识库名称"
+                className={inputBase}
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-sm font-medium">描述</label>
+              <textarea
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+                disabled={!canManage || updateMutation.isPending}
+                rows={4}
+                placeholder="知识库描述"
+                className="w-full resize-none rounded-md border border-input bg-background p-3 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">
+                  所属部门 / 公共
+                </label>
+                <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm text-foreground/90">
+                  <Building2Icon className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
+                  {departmentLabel}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <label className="text-sm font-medium text-muted-foreground">
+                  权限
+                </label>
+                <div className="flex h-9 items-center rounded-md border bg-muted/30 px-3 text-sm text-foreground/90">
+                  {canManage ? (
+                    <>
+                      <SettingsIcon className="mr-1.5 h-3.5 w-3.5 text-primary" />
+                      可管理
+                    </>
+                  ) : (
+                    <>
+                      <LockIcon className="mr-1.5 h-3.5 w-3.5 text-muted-foreground" />
+                      只读
+                    </>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            {!canManage && (
+              <p className="text-xs text-muted-foreground">只读权限，无法修改。</p>
+            )}
+
+            {canManage && (
+              <div className="flex justify-end">
+                <Button
+                  onClick={handleSave}
+                  disabled={!canSave}
+                  className="h-9 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-4 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+                >
+                  {updateMutation.isPending ? (
+                    <>
+                      <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                      保存中…
+                    </>
+                  ) : (
+                    "保存"
+                  )}
+                </Button>
+              </div>
+            )}
+          </div>
+        </section>
+
+        {/* 索引配置 (只读) */}
+        <section className="mt-5 rounded-lg border bg-background p-5">
+          <h2 className="text-sm font-semibold">索引配置</h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            索引配置暂不支持在前端修改。
+          </p>
+          <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div>
+              <div className="text-xs text-muted-foreground">Embedding 模型</div>
+              <div className="mt-1 break-all text-sm text-foreground/90">
+                {kb.embedding_model || "—"}
+              </div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">文档数</div>
+              <div className="mt-1 text-sm text-foreground/90">{kb.doc_count ?? 0}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">创建时间</div>
+              <div className="mt-1 text-sm text-foreground/90">
+                {formatDate(kb.created_at)}
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* 危险操作 */}
+        <section className="mt-5 rounded-lg border border-red-200/70 bg-red-50/30 p-5 dark:border-red-800/40 dark:bg-red-950/10">
+          <h2 className="text-sm font-semibold text-red-700 dark:text-red-400">
+            危险操作
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            删除后知识库及其文档索引将无法恢复。
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <div className="text-sm font-medium text-foreground/90">删除知识库</div>
+              <div className="mt-0.5 text-xs text-muted-foreground">
+                永久删除知识库和所有文档索引
+              </div>
+            </div>
+            <Button
+              variant="destructive"
+              onClick={handleDelete}
+              disabled={!canManage || deleteMutation.isPending}
+              className="h-9 shrink-0 rounded-lg text-sm"
+            >
+              {deleteMutation.isPending ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  删除中…
+                </>
+              ) : (
+                <>
+                  <TrashIcon className="mr-1.5 h-4 w-4" />
+                  删除知识库
+                </>
+              )}
+            </Button>
+          </div>
+        </section>
       </div>
     </div>
   );

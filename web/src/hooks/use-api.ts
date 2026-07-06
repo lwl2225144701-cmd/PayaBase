@@ -36,6 +36,23 @@ export function useCreateKnowledgeBase() {
   });
 }
 
+export function useUpdateKnowledgeBase() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      data,
+    }: {
+      id: string;
+      data: { name?: string; description?: string };
+    }) => api.updateKnowledgeBase(id, data),
+    onSuccess: (_, { id }) => {
+      queryClient.invalidateQueries({ queryKey: ["knowledgeBase", id] });
+      queryClient.invalidateQueries({ queryKey: ["knowledgeBases"] });
+    },
+  });
+}
+
 export function useDeleteKnowledgeBase() {
   const queryClient = useQueryClient();
   return useMutation({
