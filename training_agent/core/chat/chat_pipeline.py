@@ -552,6 +552,7 @@ async def handle_chat(
                     completed_steps_summary=agent_run_state.completed_steps_summary,
                     artifacts=artifacts,
                     timings=timings,
+                    chunks_count=len(chunks_data),
                     attachment_used=state.attachment_used,
                     web_search_mode=state.web_search_mode,
                     started_at=t_total,

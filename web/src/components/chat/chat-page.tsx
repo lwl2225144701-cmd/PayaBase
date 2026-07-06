@@ -27,6 +27,14 @@ interface ChatMessage {
     current_step?: string;
     next_step?: string | null;
     completed_steps_summary?: string;
+    route?: string;
+    decision_source?: string;
+    reason?: string;
+    confidence?: number;
+    citations?: Array<Record<string, any>>;
+    chunks_count?: number;
+    citations_count?: number;
+    timings?: Record<string, any>;
   };
 }
 
@@ -192,6 +200,79 @@ export default function ChatPage({
     );
   };
 
+  const RetrievalProcessCard = ({ agent }: { agent?: Record<string, any> }) => {
+    const [open, setOpen] = useState(false);
+    if (!agent) return null;
+    const t = agent.timings || {};
+
+    // 仅在真正发生过 RAG 检索时才展示,避免非检索场景出现空调试区
+    const hasRag =
+      (typeof t.embedding_ms === "number" && t.embedding_ms > 0) ||
+      (typeof t.retrieval_ms === "number" && t.retrieval_ms > 0) ||
+      (agent.chunks_count ?? 0) > 0 ||
+      (agent.citations_count ?? 0) > 0 ||
+      !!t.retrieval_rerank_decision;
+    if (!hasRag) return null;
+
+    const ms = (v: any) => (typeof v === "number" && v > 0 ? `${v} ms` : null);
+    const rows: Array<{ label: string; value: string }> = [];
+    if (agent.route) {
+      rows.push({
+        label: "路由",
+        value: agent.decision_source ? `${agent.route} · ${agent.decision_source}` : `${agent.route}`,
+      });
+      if (agent.reason) rows.push({ label: "决策理由", value: String(agent.reason) });
+    }
+    if (typeof agent.chunks_count === "number") rows.push({ label: "召回分块", value: `${agent.chunks_count}` });
+    if (typeof agent.citations_count === "number") rows.push({ label: "引用数量", value: `${agent.citations_count}` });
+    const rerankDecision = t.retrieval_rerank_decision;
+    if (rerankDecision) rows.push({ label: "重排序", value: String(rerankDecision) });
+    const rerankReason = t.retrieval_rerank_reason;
+    if (rerankReason && rerankReason !== "not_evaluated") rows.push({ label: "重排序理由", value: String(rerankReason) });
+    const retrievalMs = ms(t.retrieval_ms) || ms(t.retrieval_total_ms);
+    if (retrievalMs) rows.push({ label: "检索耗时", value: retrievalMs });
+    const emb = ms(t.embedding_ms);
+    if (emb) rows.push({ label: "向量化", value: emb });
+    const vsql = ms(t.retrieval_vector_sql_ms);
+    if (vsql) rows.push({ label: "向量SQL", value: vsql });
+    const bm25 = ms(t.retrieval_bm25_ms);
+    if (bm25) rows.push({ label: "BM25", value: bm25 });
+    const rrf = ms(t.retrieval_rrf_ms);
+    if (rrf) rows.push({ label: "RRF", value: rrf });
+    const rms = ms(t.retrieval_rerank_ms);
+    if (rms) rows.push({ label: "重排序耗时", value: rms });
+
+    if (rows.length === 0) return null;
+
+    return (
+      <div className="mt-3 rounded-md border border-border/60 bg-muted/30">
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          className="flex w-full items-center justify-between gap-2 px-3 py-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-1.5 w-1.5 rounded-full bg-primary/60" />
+            检索过程
+          </span>
+          <span>{open ? "收起" : "展开"}</span>
+        </button>
+        {open && (
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border/50 px-3 py-2 text-xs sm:grid-cols-3">
+            {rows.map((r, i) => (
+              <div key={i} className="min-w-0">
+                <div className="text-[10px] text-muted-foreground">{r.label}</div>
+                <div className="truncate font-medium text-foreground" title={r.value}>
+                  {r.value}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const renderCitationTitle = (citation: Record<string, any>) => {
     return (
       citation.document_title ||
@@ -215,11 +296,21 @@ export default function ChatPage({
           {normalized.map((citation, index) => (
             <span
               key={index}
-              className="inline-flex max-w-[260px] items-center gap-1 rounded-full border bg-background/70 px-2.5 py-1 text-xs text-muted-foreground shadow-sm"
+              className="inline-flex max-w-[280px] flex-col gap-0.5 rounded-md border bg-background/70 px-2.5 py-1.5 text-xs shadow-sm"
               title={JSON.stringify(citation)}
             >
-              <span className="text-primary">[{index + 1}]</span>
-              <span className="truncate">{renderCitationTitle(citation)}</span>
+              <span className="flex items-center gap-1.5">
+                <span className="font-medium text-primary">[{index + 1}]</span>
+                <span className="truncate font-medium text-foreground">{renderCitationTitle(citation)}</span>
+              </span>
+              <span className="flex flex-wrap items-center gap-x-2 text-[10px] text-muted-foreground">
+                {citation.chunk_id && (
+                  <span className="font-mono truncate">chunk: {citation.chunk_id}</span>
+                )}
+                {typeof citation.score === "number" && (
+                  <span>score: {(citation.score * 100).toFixed(1)}%</span>
+                )}
+              </span>
             </span>
           ))}
         </div>
@@ -296,7 +387,11 @@ export default function ChatPage({
           setMessages((prev) => {
             const last = prev[prev.length - 1];
             if (last?.role === "assistant") {
-              return [...prev.slice(0, -1), { ...last, agent: chunk.agent }];
+              const next = { ...last, agent: chunk.agent };
+              if (chunk.agent.citations?.length) {
+                next.citations = chunk.agent.citations;
+              }
+              return [...prev.slice(0, -1), next];
             }
             return prev;
           });
@@ -470,7 +565,8 @@ export default function ChatPage({
 	                      msg.content || (msg.artifacts && msg.artifacts.length > 0) ? (
 	                        <>
                           {msg.content && <MarkdownRenderer content={msg.content} />}
-                          {renderCitations(msg.citations)}
+                          {renderCitations(msg.citations || (msg.agent?.citations as any))}
+                          {msg.role === "assistant" && <RetrievalProcessCard agent={msg.agent} />}
                           {msg.artifacts?.map((a, j) => (
 	                            <div key={j} className="mt-3">
 	                              <ArtifactProgressCard type={a.type} taskId={a.taskId} />

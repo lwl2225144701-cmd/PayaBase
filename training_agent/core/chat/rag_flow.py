@@ -108,8 +108,10 @@ async def retrieve_chat_context(
         for c in retrieved:
             result.citations.append({
                 "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
                 "document_title": c.document_title,
                 "score": c.score,
+                "rank": c.rank,
             })
             result.chunks_data.append({
                 "content": c.content,

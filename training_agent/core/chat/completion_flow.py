@@ -42,6 +42,7 @@ class CompletionRequest:
     timings: dict
     attachment_used: bool
     web_search_mode: str
+    chunks_count: int = 0
     started_at: float
 
 
@@ -64,19 +65,29 @@ async def complete_chat_response(
     latency_ms = int((time.time() - request.started_at) * 1000)
     request.timings["total_ms"] = latency_ms
 
+    agent_context = {
+        "run_id": request.agent_run_id,
+        "run_db_id": request.agent_run_db_id,
+        "status": request.agent_status,
+        "current_step": request.agent_current_step,
+        "next_step": request.agent_next_step,
+        "completed_steps_summary": request.completed_steps_summary,
+        "route": request.route,
+        "decision_source": request.decision_source,
+        "reason": request.reason,
+        "confidence": request.confidence,
+        "citations": request.citations,
+        "chunks_count": request.chunks_count,
+        "citations_count": len(request.citations),
+        "timings": request.timings,
+    }
+
     context = {
         "route": request.route,
         "decision_source": request.decision_source,
         "reason": request.reason,
         "confidence": request.confidence,
-        "agent": {
-            "run_id": request.agent_run_id,
-            "run_db_id": request.agent_run_db_id,
-            "status": request.agent_status,
-            "current_step": request.agent_current_step,
-            "next_step": request.agent_next_step,
-            "completed_steps_summary": request.completed_steps_summary,
-        },
+        "agent": agent_context,
         "artifacts": request.artifacts,
         "timings": request.timings,
     }
@@ -91,14 +102,7 @@ async def complete_chat_response(
         db=db,
     )
 
-    agent_payload = {
-        "run_id": request.agent_run_id,
-        "run_db_id": request.agent_run_db_id,
-        "status": request.agent_status,
-        "current_step": request.agent_current_step,
-        "next_step": request.agent_next_step,
-        "completed_steps_summary": request.completed_steps_summary,
-    }
+    agent_payload = agent_context
 
     finished_payload = {
         "web_search_mode": request.web_search_mode,
