@@ -42,8 +42,8 @@ class CompletionRequest:
     timings: dict
     attachment_used: bool
     web_search_mode: str
-    chunks_count: int = 0
     started_at: float
+    chunks_count: int = 0
 
 
 @dataclass
