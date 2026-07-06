@@ -13,12 +13,14 @@ import {
   CheckCircle2Icon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  CopyIcon,
   FileIcon,
   FileTextIcon,
   FlaskConicalIcon,
   InfoIcon,
   Loader2,
   LockIcon,
+  MessageSquareIcon,
   MoreHorizontalIcon,
   RefreshCwIcon,
   SearchIcon,
@@ -1039,16 +1041,57 @@ function scoreTextColor(score: number): string {
   return "text-amber-600 dark:text-amber-400";
 }
 
+function highlightText(text: string, query: string) {
+  const q = query.trim();
+  if (!q) return text;
+  const rawTerms = q.split(/\s+/).filter(Boolean);
+  const terms = rawTerms.length > 1 ? rawTerms : [q];
+  const uniq = Array.from(new Set(terms.map((t) => t.toLowerCase())));
+  if (uniq.length === 0) return text;
+  const escaped = uniq.map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const re = new RegExp(`(${escaped.join("|")})`, "gi");
+  const parts = text.split(re);
+  return parts.map((part, i) =>
+    part && uniq.includes(part.toLowerCase()) ? (
+      <mark
+        key={i}
+        className="rounded-sm bg-yellow-100 text-yellow-900 dark:bg-yellow-900/40 dark:text-yellow-100"
+      >
+        {part}
+      </mark>
+    ) : (
+      <span key={i}>{part}</span>
+    )
+  );
+}
+
+async function copyToClipboard(text: string) {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      throw new Error("clipboard unavailable");
+    }
+  } catch (e) {
+    console.warn("[RetrievalTest] 复制失败:", e);
+  }
+}
+
 function RetrievalTestPanel({ kbId }: { kbId: string }) {
   const [query, setQuery] = useState("");
   const [topK, setTopK] = useState(5);
   const [threshold, setThreshold] = useState(0.2);
   const [useRerank, setUseRerank] = useState(true);
   const retrieval = useRetrievalTest();
+  const [expandedChunkIds, setExpandedChunkIds] = useState<Record<string, boolean>>({});
 
   const result = retrieval.data as RetrievalResult | undefined;
   const items = result?.items || [];
   const timings = result?.timings;
+  const hasTested = !!result;
+  const chatHref = query.trim()
+    ? `/chat?kb_id=${kbId}&q=${encodeURIComponent(query.trim())}`
+    : `/chat?kb_id=${kbId}`;
 
   const onSubmit = () => {
     const q = query.trim();
@@ -1192,9 +1235,24 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
             </div>
           )}
 
-          {!retrieval.isPending && !retrieval.isError && items.length === 0 && (
+          {!retrieval.isPending && !retrieval.isError && items.length === 0 && !hasTested && (
             <div className="flex flex-col items-center justify-center py-20 text-center text-sm text-muted-foreground">
               输入查询语句后点击「开始测试」，召回结果会显示在这里。
+            </div>
+          )}
+
+          {!retrieval.isPending && !retrieval.isError && items.length === 0 && hasTested && (
+            <div className="flex flex-col items-center justify-center py-16 text-center">
+              <div className="text-sm font-medium text-foreground">没有召回到相关分块</div>
+              <p className="mt-2 max-w-md text-xs leading-5 text-muted-foreground">
+                排查建议：
+              </p>
+              <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                <li>• 降低相似度阈值</li>
+                <li>• 增大召回数量</li>
+                <li>• 确认文档已索引完成</li>
+                <li>• 换一个更具体的问题</li>
+              </ul>
             </div>
           )}
 
@@ -1208,16 +1266,27 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                     <span className="font-semibold text-foreground">{items.length}</span>
                     <span className="text-muted-foreground"> 个分块</span>
                   </div>
-                  <Badge variant="outline" className={`rounded-md px-2 py-0.5 text-xs font-normal ${rerankBadge}`}>
-                    {rerankDecision === "reranked" ? "已重排序" : "未重排序"}
-                  </Badge>
+                  <div className="flex items-center gap-2">
+                    <Button asChild variant="outline" size="sm" className="h-7 gap-1 text-xs">
+                      <Link href={chatHref}>
+                        <MessageSquareIcon className="h-3.5 w-3.5" />
+                        用当前问题去聊天
+                      </Link>
+                    </Button>
+                    <Badge variant="outline" className={`rounded-md px-2 py-0.5 text-xs font-normal ${rerankBadge}`}>
+                      {rerankDecision === "reranked" ? "已重排序" : "未重排序"}
+                    </Badge>
+                  </div>
                 </div>
 
-                {timings?.rerank_reason && timings.rerank_reason !== "not_evaluated" && (
+                {!useRerank ? (
+                  <p className="mt-2 text-xs text-muted-foreground">用户关闭重排序</p>
+                ) : rerankDecision || (timings?.rerank_reason && timings.rerank_reason !== "not_evaluated") ? (
                   <p className="mt-2 text-xs text-muted-foreground">
-                    重排序决策：{timings.rerank_reason}
+                    Rerank: {rerankDecision || "—"}
+                    {timings?.rerank_reason && timings.rerank_reason !== "not_evaluated" ? ` / ${timings.rerank_reason}` : ""}
                   </p>
-                )}
+                ) : null}
 
                 <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
                   {timingMetrics.map((m) => (
@@ -1238,9 +1307,17 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
 
               {/* Chunk cards */}
               <div className="flex flex-col gap-3">
-                {items.map((item) => (
+                {items.map((item) => {
+                  const chunkKey = item.chunk_id || String(item.rank);
+                  const isExpanded = expandedChunkIds[chunkKey];
+                  const shouldCollapse = item.content.length > 500;
+                  const displayContent =
+                    shouldCollapse && !isExpanded
+                      ? item.content.slice(0, 500) + "..."
+                      : item.content;
+                  return (
                   <div
-                    key={item.chunk_id || item.rank}
+                    key={chunkKey}
                     className="rounded-lg border bg-background p-4 transition-colors hover:border-primary/30"
                   >
                     <div className="flex items-start justify-between gap-3">
@@ -1252,7 +1329,25 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                           {item.document_title || "未知文档"}
                         </span>
                       </div>
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(item.content)}
+                          title="复制内容"
+                          className="flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          <CopyIcon className="h-3.5 w-3.5" />
+                          内容
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => copyToClipboard(item.chunk_id || "")}
+                          title="复制 chunk_id"
+                          className="flex h-7 items-center gap-1 rounded-md px-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                        >
+                          <CopyIcon className="h-3.5 w-3.5" />
+                          ID
+                        </button>
                         <span className={`text-sm font-semibold ${scoreTextColor(item.score)}`}>
                           {(item.score * 100).toFixed(1)}%
                         </span>
@@ -1268,8 +1363,20 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                     </div>
 
                     <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
-                      {item.content}
+                      {highlightText(displayContent, query)}
                     </p>
+
+                    {shouldCollapse && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setExpandedChunkIds((prev) => ({ ...prev, [chunkKey]: !prev[chunkKey] }))
+                        }
+                        className="mt-2 text-xs font-medium text-primary hover:underline"
+                      >
+                        {isExpanded ? "收起" : "展开全文"}
+                      </button>
+                    )}
 
                     <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
                       <span className="font-mono">chunk_id: {item.chunk_id || "—"}</span>
@@ -1287,7 +1394,8 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                       </details>
                     )}
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </>
           )}
