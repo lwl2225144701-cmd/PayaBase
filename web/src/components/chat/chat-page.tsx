@@ -51,9 +51,18 @@ interface AgentStepDetail {
   tool_trace?: Array<Record<string, any>>;
 }
 
-export default function ChatPage() {
+type ChatPageProps = {
+  initialKbId?: string;
+  initialQuery?: string;
+  autoSend?: boolean; // 预留：当前不自动发送，由用户手动点击发送
+};
+
+export default function ChatPage({
+  initialKbId = "",
+  initialQuery = "",
+}: ChatPageProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
-  const [input, setInput] = useState("");
+  const [input, setInput] = useState(initialQuery || "");
   const [loading, setLoading] = useState(false);
   const [conversationId, setConversationId] = useState<string>("");
   const [attachments, setAttachments] = useState<AttachmentState[]>([]);
@@ -75,7 +84,14 @@ export default function ChatPage() {
         setKnowledgeBases(kbs);
 
         const convs: any = await api.getConversations();
-        if (convs && convs.length > 0) {
+
+        // 从召回测试等入口带 kb_id 进来时优先选中该知识库，不加载旧会话消息
+        const initialKbExists =
+          initialKbId && kbs.some((kb: any) => kb.id === initialKbId);
+
+        if (initialKbExists) {
+          setCurrentKBId(initialKbId);
+        } else if (convs && convs.length > 0) {
           const convWithKB = convs.find((c: any) => c.knowledge_base_id);
           const latestConv = convWithKB || convs[0];
           setConversationId(latestConv.id);
@@ -99,7 +115,7 @@ export default function ChatPage() {
       }
     }
     loadHistory();
-  }, []);
+  }, [initialKbId]);
 
   useEffect(() => {
     if (scrollRef.current) {
