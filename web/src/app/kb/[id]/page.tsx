@@ -228,7 +228,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
-  const [activeTab, setActiveTab] = useState<"documents" | "retrieval_test" | "settings">("documents");
+  const [activeTab, setActiveTab] = useState<"documents" | "pipeline" | "retrieval_test" | "settings">("documents");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
@@ -420,15 +420,18 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             <li>
               <button
                 type="button"
-                disabled
-                className="flex h-9 w-full items-center justify-between rounded-md px-3 text-sm text-muted-foreground/60"
-                title="即将推出"
+                onClick={() => setActiveTab("pipeline")}
+                className={`flex h-9 w-full items-center justify-between rounded-md px-3 text-sm font-medium ${
+                  activeTab === "pipeline"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
               >
                 <span className="flex items-center gap-2.5">
                   <RefreshCwIcon className="h-4 w-4" />
                   流水线
                 </span>
-                <span className="text-[10px] uppercase tracking-wide opacity-70">soon</span>
+                <ChevronRightIcon className={`h-3.5 w-3.5 opacity-60 ${activeTab === "pipeline" ? "" : "hidden"}`} />
               </button>
             </li>
             <li>
@@ -530,6 +533,13 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             showEmptySearch={showEmptySearch}
             showEmptyFilter={showEmptyFilter}
             fileInputRef={fileInputRef}
+          />
+        ) : activeTab === "pipeline" ? (
+          <PipelinePanel
+            kbId={kbId}
+            kb={kb}
+            canManage={canManage}
+            onGoDocuments={() => setActiveTab("documents")}
           />
         ) : activeTab === "retrieval_test" ? (
           <RetrievalTestPanel kbId={kbId} />
@@ -1002,6 +1012,261 @@ function DocumentsTabContent(props: DocumentsTabProps) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ====== Pipeline Panel (MVP) ======
+function PipelinePanel({
+  kbId,
+  kb,
+  canManage,
+  onGoDocuments,
+}: {
+  kbId: string;
+  kb: any;
+  canManage: boolean;
+  onGoDocuments: () => void;
+}) {
+  // 复用文档分页接口, 分别拉取: 全部 / 失败 / 处理中(含 pending)
+  const allQuery = useDocumentsPage(
+    kbId,
+    { page: 1, pageSize: 50, status: undefined, sort: "created_desc" },
+    { refetchInterval: 3000 }
+  );
+  const errorQuery = useDocumentsPage(
+    kbId,
+    { page: 1, pageSize: 20, status: "error", sort: "created_desc" },
+    { refetchInterval: 3000 }
+  );
+  const processingQuery = useDocumentsPage(
+    kbId,
+    { page: 1, pageSize: 20, status: "indexing", sort: "created_desc" },
+    { refetchInterval: 3000 }
+  );
+  const reindexDoc = useReindexDocument();
+
+  const allData = allQuery.data;
+  const counts = allData?.counts;
+  const totalDocs = counts?.all ?? allData?.total ?? 0;
+  const readyCount = counts?.ready ?? 0;
+  const processingCount = counts?.indexing ?? 0; // 后端 indexing 已包含 pending
+  const errorCount = counts?.error ?? 0;
+
+  // 分块总数: 后端 KB 无聚合字段, 从全部列表(前 50 条)累加 chunk_count
+  const totalChunks = useMemo(() => {
+    const items: any[] = allData?.items || [];
+    return items.reduce((sum, d) => sum + (d.chunk_count || 0), 0);
+  }, [allData]);
+
+  const errorDocs: any[] = errorQuery.data?.items || [];
+  const processingDocs: any[] = processingQuery.data?.items || [];
+
+  const loading = allQuery.isLoading || kb == null;
+
+  const handleReindex = (docId: string) => {
+    if (!canManage) return;
+    reindexDoc.mutate(
+      { kbId, docId },
+      {
+        onError: (e: any) => {
+          alert("重新索引失败: " + (e?.message || "未知错误"));
+        },
+      }
+    );
+  };
+
+  if (loading) {
+    return (
+      <div className="flex h-full items-center justify-center px-6 py-5 text-sm text-muted-foreground">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> 加载中…
+      </div>
+    );
+  }
+
+  // 空状态: 没有任何文档, 引导去文档 tab 上传
+  if (totalDocs === 0) {
+    return (
+      <div className="px-6 py-5">
+        <div className="mb-5">
+          <h1 className="text-lg font-semibold">索引流水线</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            查看文档从上传、解析、分块到向量索引的处理状态。
+          </p>
+        </div>
+        <div className="flex flex-col items-center justify-center rounded-lg border border-dashed bg-background px-6 py-12 text-center">
+          <RefreshCwIcon className="h-8 w-8 text-muted-foreground/50" />
+          <p className="mt-3 text-sm text-muted-foreground">
+            还没有文档进入索引流水线。
+          </p>
+          <Button variant="outline" size="sm" className="mt-4" onClick={onGoDocuments}>
+            <FileTextIcon className="mr-1.5 h-3.5 w-3.5" />
+            前往文档 tab
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  const stats = [
+    { label: "文档总数", value: totalDocs, icon: FileTextIcon },
+    { label: "已完成", value: readyCount, icon: CheckCircle2Icon, tone: "text-green-600" },
+    { label: "处理中", value: processingCount, icon: Loader2, tone: "text-yellow-600" },
+    { label: "失败", value: errorCount, icon: XIcon, tone: "text-red-600" },
+    { label: "分块总数", value: totalChunks, icon: CopyIcon },
+  ];
+
+  const stages = [
+    { title: "上传", desc: "文档进入知识库，生成文档记录。" },
+    { title: "文档解析", desc: "提取 PDF / Word / Markdown / Excel / 图片等文件内容。" },
+    { title: "文本分块", desc: "将长文本切分为可检索片段。" },
+    { title: "向量化", desc: "使用 embedding 模型生成向量。" },
+    { title: "索引入库", desc: "写入向量索引，供相似度检索使用。" },
+    { title: "可召回", desc: "文档可被召回测试和聊天问答使用。" },
+  ];
+
+  return (
+    <div className="px-6 py-5">
+      {/* 标题 */}
+      <div className="mb-5">
+        <h1 className="text-lg font-semibold">索引流水线</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          查看文档从上传、解析、分块到向量索引的处理状态。
+        </p>
+      </div>
+
+      {/* 状态总览 */}
+      <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+        {stats.map((s) => {
+          const StatIcon = s.icon;
+          return (
+            <div key={s.label} className="rounded-lg border bg-background p-3">
+              <div className="flex items-center gap-2 text-muted-foreground">
+                <StatIcon className={`h-4 w-4 ${s.tone || ""}`} />
+                <span className="text-xs">{s.label}</span>
+              </div>
+              <div className="mt-1.5 text-2xl font-semibold tabular-nums">{s.value}</div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 流水线阶段说明 */}
+      <section className="mb-6 rounded-lg border bg-background p-4">
+        <h2 className="mb-3 text-sm font-semibold">流水线阶段</h2>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          {stages.map((s, i) => (
+            <div key={s.title} className="rounded-md border bg-muted/30 p-3">
+              <div className="flex items-center gap-2">
+                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-primary/10 text-xs font-medium text-primary">
+                  {i + 1}
+                </span>
+                <span className="text-sm font-medium">{s.title}</span>
+                <Badge variant="secondary" className="ml-auto text-[10px]">
+                  系统默认
+                </Badge>
+              </div>
+              <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{s.desc}</p>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-muted-foreground">
+          以上为索引流水线的标准阶段说明，不代表实时任务编排，当前版本暂不支持编辑。
+        </p>
+      </section>
+
+      {/* 异常文档区 */}
+      <section className="mb-6 rounded-lg border bg-background p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">异常文档</h2>
+          <Badge variant={errorCount > 0 ? "destructive" : "secondary"}>{errorCount}</Badge>
+        </div>
+        {errorDocs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">没有失败文档，很好。</p>
+        ) : (
+          <div className="divide-y">
+            {errorDocs.map((doc) => (
+              <div key={doc.id} className="flex items-center gap-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{doc.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    上传于 {formatDate(doc.created_at)}
+                  </div>
+                </div>
+                <Badge variant="destructive" className="shrink-0">
+                  失败
+                </Badge>
+                {canManage ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={reindexDoc.isPending}
+                    onClick={() => handleReindex(doc.id)}
+                  >
+                    <RefreshCwIcon className="mr-1.5 h-3.5 w-3.5" />
+                    重新索引
+                  </Button>
+                ) : (
+                  <span className="shrink-0 text-xs text-muted-foreground">只读权限</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* 处理中区 */}
+      <section className="mb-6 rounded-lg border bg-background p-4">
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-sm font-semibold">处理中</h2>
+          <Badge variant="secondary">{processingCount}</Badge>
+        </div>
+        {processingDocs.length === 0 ? (
+          <p className="text-sm text-muted-foreground">没有正在处理的文档。</p>
+        ) : (
+          <div className="divide-y">
+            {processingDocs.map((doc) => (
+              <div key={doc.id} className="flex items-center gap-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium">{doc.title}</div>
+                  <div className="mt-0.5 text-xs text-muted-foreground">
+                    上传于 {formatDate(doc.created_at)}
+                    {doc.chunk_count ? ` · ${doc.chunk_count} 分块` : ""}
+                  </div>
+                </div>
+                <Badge variant="secondary" className="shrink-0">
+                  <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                  {doc.status === "pending" ? "排队中" : "索引中"}
+                </Badge>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* 索引配置只读 */}
+      <section className="rounded-lg border bg-background p-4">
+        <h2 className="mb-3 text-sm font-semibold">索引配置</h2>
+        <dl className="grid grid-cols-1 gap-x-6 gap-y-3 sm:grid-cols-2">
+          <div>
+            <dt className="text-xs text-muted-foreground">Embedding 模型</dt>
+            <dd className="mt-0.5 text-sm font-medium">{kb?.embedding_model || "系统默认"}</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">默认分块策略</dt>
+            <dd className="mt-0.5 text-sm font-medium">通用</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">默认 Top K</dt>
+            <dd className="mt-0.5 text-sm font-medium">系统默认</dd>
+          </div>
+          <div>
+            <dt className="text-xs text-muted-foreground">Rerank</dt>
+            <dd className="mt-0.5 text-sm font-medium">按系统策略</dd>
+          </div>
+        </dl>
+        <p className="mt-3 text-xs text-muted-foreground">当前版本暂不支持在前端修改索引策略。</p>
+      </section>
     </div>
   );
 }
