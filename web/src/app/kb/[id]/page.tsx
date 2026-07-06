@@ -332,18 +332,22 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   };
 
   const loading = docsPageQuery.isLoading || kbLoading;
-  const hasNoDocs = !loading && totalItems === 0;
+  const totalDocsInKb =
+    docsPage?.counts?.all ?? kb?.doc_count ?? 0;
+
+  const hasNoDocs =
+    !loading && totalDocsInKb === 0;
+
+  const hasNoFilteredDocs =
+    !loading && !hasNoDocs && totalItems === 0;
+
   const showEmptySearch =
-    !loading &&
-    !hasNoDocs &&
-    normalizedKeyword.length > 0 &&
-    docs.length === 0;
+    hasNoFilteredDocs && normalizedKeyword.length > 0;
+
   const showEmptyFilter =
-    !loading &&
-    !hasNoDocs &&
+    hasNoFilteredDocs &&
     normalizedKeyword.length === 0 &&
-    statusFilter !== "all" &&
-    docs.length === 0;
+    statusFilter !== "all";
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
@@ -462,7 +466,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             <div className="rounded-md bg-background/60 px-2.5 py-2">
               <div className="text-[10px] uppercase tracking-wide opacity-70">文档数</div>
               <div className="mt-0.5 text-sm font-medium text-foreground">
-                {kb?.doc_count ?? (docs as any[])?.length ?? 0}
+                {totalDocsInKb}
               </div>
             </div>
             <div className="rounded-md bg-background/60 px-2.5 py-2">

@@ -82,6 +82,7 @@ export function useUploadDocument() {
       api.uploadDocument(kbId, file),
     onSuccess: (_, { kbId }) => {
       queryClient.invalidateQueries({ queryKey: ["documents", kbId] });
+      queryClient.invalidateQueries({ queryKey: ["documentsPage", kbId] });
       queryClient.invalidateQueries({ queryKey: ["knowledgeBases"] });
     },
   });
@@ -104,6 +105,7 @@ export function useUploadDocuments() {
     },
     onSuccess: (_, { kbId }) => {
       queryClient.invalidateQueries({ queryKey: ["documents", kbId] });
+      queryClient.invalidateQueries({ queryKey: ["documentsPage", kbId] });
       queryClient.invalidateQueries({ queryKey: ["knowledgeBases"] });
     },
   });
@@ -116,6 +118,7 @@ export function useDeleteDocument() {
       api.deleteDocument(kbId, docId),
     onSuccess: (_, { kbId }) => {
       queryClient.invalidateQueries({ queryKey: ["documents", kbId] });
+      queryClient.invalidateQueries({ queryKey: ["documentsPage", kbId] });
       queryClient.invalidateQueries({ queryKey: ["knowledgeBases"] });
     },
   });
@@ -126,8 +129,9 @@ export function useReindexDocument() {
   return useMutation({
     mutationFn: ({ kbId, docId }: { kbId: string; docId: string }) =>
       api.reindexDocument(kbId, docId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["documents"] });
+    onSuccess: (_, { kbId }) => {
+      queryClient.invalidateQueries({ queryKey: ["documents", kbId] });
+      queryClient.invalidateQueries({ queryKey: ["documentsPage", kbId] });
     },
   });
 }
