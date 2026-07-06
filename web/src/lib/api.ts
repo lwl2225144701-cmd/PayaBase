@@ -279,6 +279,50 @@ class ApiClient {
     return res.data;
   }
 
+  // Retrieval Test (MVP)
+  async retrievalTest(
+    kbId: string,
+    data: { query: string; top_k: number; threshold: number; use_rerank: boolean }
+  ) {
+    if (MOCK_MODE) {
+      // MOCK: 模拟 2-3 条假分块
+      const scores = [0.92, 0.78, 0.55].slice(0, data.top_k);
+      const items = scores.map((s, i) => ({
+        chunk_id: `mock-chunk-${i + 1}`,
+        document_id: `mock-doc-${i + 1}`,
+        document_title: `示例文档 ${i + 1}.pdf`,
+        content: `这是与"${data.query}"相关的分块内容, 实际召回时来自向量数据库。命中分数 ${s}。${i === 0 ? "这是第一个分块, 通常与查询最相关。" : ""}`,
+        score: s,
+        rank: i + 1,
+        metadata: { source: "mock", chunk_type: "recursive" },
+      }));
+      return {
+        query: data.query,
+        items,
+        timings: {
+          embedding_ms: 85,
+          retrieval_ms: 210,
+          vector_sql_ms: 95,
+          bm25_ms: 12,
+          rrf_ms: 5,
+          rerank_ms: 38,
+          retrieval_total_ms: 250,
+          rerank_decision: data.use_rerank ? "reranked" : "off",
+          rerank_reason: data.use_rerank ? "rerank applied" : "user_disabled",
+          total_ms: 295,
+        },
+      };
+    }
+    const res = await this.request<{ code: number; data: any; msg: string }>(
+      `/api/kb/${kbId}/retrieval-test`,
+      {
+        method: "POST",
+        body: JSON.stringify(data),
+      }
+    );
+    return res.data;
+  }
+
   // Sources
   async getFeishuLoginUrl(redirectUri?: string) {
     const query = new URLSearchParams();

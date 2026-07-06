@@ -27,7 +27,7 @@ import {
   UploadIcon,
   XIcon,
 } from "lucide-react";
-import { useDocumentsPage, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase } from "@/hooks/use-api";
+import { useDocumentsPage, useUploadDocuments, useDeleteDocument, useReindexDocument, useIndexingStatus, useKnowledgeBase, useRetrievalTest } from "@/hooks/use-api";
 
 type StatusFilter = "all" | "ready" | "indexing" | "pending" | "error";
 type SortKey = "created_desc" | "created_asc" | "name_asc" | "name_desc";
@@ -224,6 +224,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   const [sortKey, setSortKey] = useState<SortKey>("created_desc");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
+  const [activeTab, setActiveTab] = useState<"documents" | "retrieval_test">("documents");
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
@@ -394,7 +395,12 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             <li>
               <button
                 type="button"
-                className="flex h-9 w-full items-center justify-between rounded-md bg-primary/10 px-3 text-sm font-medium text-primary"
+                onClick={() => setActiveTab("documents")}
+                className={`flex h-9 w-full items-center justify-between rounded-md px-3 text-sm font-medium ${
+                  activeTab === "documents"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
               >
                 <span className="flex items-center gap-2.5">
                   <FileTextIcon className="h-4 w-4" />
@@ -420,15 +426,18 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             <li>
               <button
                 type="button"
-                disabled
-                className="flex h-9 w-full items-center justify-between rounded-md px-3 text-sm text-muted-foreground/60"
-                title="即将推出"
+                onClick={() => setActiveTab("retrieval_test")}
+                className={`flex h-9 w-full items-center justify-between rounded-md px-3 text-sm font-medium ${
+                  activeTab === "retrieval_test"
+                    ? "bg-primary/10 text-primary"
+                    : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                }`}
               >
                 <span className="flex items-center gap-2.5">
                   <FlaskConicalIcon className="h-4 w-4" />
                   召回测试
                 </span>
-                <span className="text-[10px] uppercase tracking-wide opacity-70">soon</span>
+                <ChevronRightIcon className={`h-3.5 w-3.5 opacity-60 ${activeTab === "retrieval_test" ? "" : "hidden"}`} />
               </button>
             </li>
             <li>
@@ -476,394 +485,810 @@ export default function DocListPage({ params }: { params: { id: string } }) {
 
       {/* ======== Right Main ======== */}
       <main className="flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
-        {/* Header */}
-        <div className="relative z-30 shrink-0 border-b bg-background/70 px-6 pb-4 pt-5 backdrop-blur-sm">
-          <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
-            <div className="min-w-0">
-              <h1 className="text-2xl font-semibold tracking-tight">文档</h1>
-              <p className="mt-1.5 text-sm text-muted-foreground">
-                知识库的所有文件都会在这里显示，可用于 AI 问答检索。
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                disabled
-                className="h-9 text-sm"
-                title="即将推出"
-              >
-                <InfoIcon className="mr-1.5 h-4 w-4" />
-                元数据
-              </Button>
-              <Button
-                size="sm"
-                onClick={canManage ? handlePickFiles : undefined}
-                disabled={!canManage || uploadDocs.isPending}
-                className="h-9 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-4 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
-                title={canManage ? "选择并上传文件" : "无权限上传"}
-              >
-                {uploadDocs.isPending ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
-                    上传中…
-                  </>
-                ) : (
-                  <>
-                    <UploadIcon className="mr-1.5 h-4 w-4" />
-                    添加文件
-                  </>
-                )}
-              </Button>
-            </div>
+        {activeTab === "documents" ? (
+          <DocumentsTabContent
+            kbId={kbId}
+            canManage={canManage}
+            docsPageQuery={docsPageQuery}
+            docs={docs}
+            totalItems={totalItems}
+            totalPages={totalPages}
+            pagedDocs={pagedDocs}
+            statusCounts={statusCounts}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            sortKey={sortKey}
+            setSortKey={setSortKey}
+            page={page}
+            setPage={setPage}
+            pageSize={pageSize}
+            setPageSize={setPageSize}
+            searchKeyword={searchKeyword}
+            setSearchKeyword={setSearchKeyword}
+            files={files}
+            handlePickFiles={handlePickFiles}
+            handleFileChange={handleFileChange}
+            handleCancelFiles={handleCancelFiles}
+            handleUpload={handleUpload}
+            handleDelete={handleDelete}
+            handleReindex={handleReindex}
+            uploadDocs={uploadDocs}
+            reindexDoc={reindexDoc}
+            loading={loading}
+            hasNoDocs={hasNoDocs}
+            showEmptySearch={showEmptySearch}
+            showEmptyFilter={showEmptyFilter}
+            fileInputRef={fileInputRef}
+          />
+        ) : (
+          <RetrievalTestPanel kbId={kbId} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// ====== Documents Tab Content ======
+type DocumentsTabProps = {
+  kbId: string;
+  canManage: boolean;
+  docsPageQuery: any;
+  docs: any[];
+  totalItems: number;
+  totalPages: number;
+  pagedDocs: any[];
+  statusCounts: any;
+  statusFilter: StatusFilter;
+  setStatusFilter: React.Dispatch<React.SetStateAction<StatusFilter>>;
+  sortKey: SortKey;
+  setSortKey: React.Dispatch<React.SetStateAction<SortKey>>;
+  page: number;
+  setPage: React.Dispatch<React.SetStateAction<number>>;
+  pageSize: number;
+  setPageSize: React.Dispatch<React.SetStateAction<number>>;
+  searchKeyword: string;
+  setSearchKeyword: React.Dispatch<React.SetStateAction<string>>;
+  files: FileList | null;
+  handlePickFiles: () => void;
+  handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  handleCancelFiles: () => void;
+  handleUpload: () => void;
+  handleDelete: (docId: string) => void;
+  handleReindex: (docId: string) => void;
+  uploadDocs: any;
+  reindexDoc: any;
+  loading: boolean;
+  hasNoDocs: boolean;
+  showEmptySearch: boolean;
+  showEmptyFilter: boolean;
+  fileInputRef: React.RefObject<HTMLInputElement>;
+};
+
+function DocumentsTabContent(props: DocumentsTabProps) {
+  const {
+    kbId,
+    canManage,
+    docsPageQuery,
+    docs,
+    totalItems,
+    totalPages,
+    pagedDocs,
+    statusCounts,
+    statusFilter,
+    setStatusFilter,
+    sortKey,
+    setSortKey,
+    page,
+    setPage,
+    pageSize,
+    setPageSize,
+    searchKeyword,
+    setSearchKeyword,
+    files,
+    handlePickFiles,
+    handleFileChange,
+    handleCancelFiles,
+    handleUpload,
+    handleDelete,
+    handleReindex,
+    uploadDocs,
+    reindexDoc,
+    loading,
+    hasNoDocs,
+    showEmptySearch,
+    showEmptyFilter,
+    fileInputRef,
+  } = props;
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Header + Toolbar (固定, 不滚动) */}
+      <div className="flex flex-col gap-3 px-6 pt-6">
+        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-semibold tracking-tight">文档</h1>
+            <p className="mt-1.5 text-sm text-muted-foreground">
+              知识库的所有文件都会在这里显示，可用于 AI 问答检索。
+            </p>
           </div>
-
-          {/* Selected files preview */}
-          {canManage && files && files.length > 0 && (
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-primary/30 bg-primary/5 px-3 py-2 text-xs">
-              <FileTextIcon className="h-3.5 w-3.5 text-primary" />
-              <span className="text-primary">已选 {files.length} 个文件</span>
-              <button
-                type="button"
-                onClick={handleCancelFiles}
-                className="ml-1 text-muted-foreground hover:text-foreground"
-                title="清除选择"
-              >
-                <XIcon className="h-3.5 w-3.5" />
-              </button>
-              <Button
-                onClick={handleUpload}
-                disabled={uploadDocs.isPending}
-                className="ml-auto h-7 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:opacity-90"
-              >
-                {uploadDocs.isPending ? "上传中…" : "立即上传"}
-              </Button>
-            </div>
-          )}
-
-          {/* Toolbar */}
-          <div className="mt-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-            <div className="flex flex-wrap items-center gap-2">
-              {STATUS_OPTIONS.map((opt) => {
-                const count = statusCounts[opt.value as keyof typeof statusCounts] ?? 0;
-                const active = statusFilter === opt.value;
-                return (
-                  <button
-                    key={opt.value}
-                    type="button"
-                    onClick={() => setStatusFilter(opt.value)}
-                    className={`h-8 rounded-md px-3 text-sm font-medium transition-colors ${
-                      active
-                        ? "bg-primary/10 text-primary"
-                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                    }`}
-                  >
-                    {opt.label}
-                    <span className="ml-1.5 text-xs opacity-60">{count}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <div className="flex items-center gap-2">
-              <div className="relative min-w-0 md:w-[240px]">
-                <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                <input
-                  value={searchKeyword}
-                  onChange={(e) => setSearchKeyword(e.target.value)}
-                  placeholder="搜索"
-                  className="h-8 w-full min-w-0 rounded-md border border-input bg-background/70 pl-9 pr-8 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
-                />
-                {searchKeyword && (
-                  <button
-                    type="button"
-                    onClick={() => setSearchKeyword("")}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    title="清空"
-                  >
-                    <XIcon className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-              <div className="relative">
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as SortKey)}
-                  className="h-8 appearance-none rounded-md border border-input bg-background/70 pl-3 pr-8 text-sm shadow-sm outline-none transition-colors focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
-                  title="排序"
-                >
-                  {SORT_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-                <ArrowUpDownIcon className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              </div>
-            </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled
+              className="h-9 text-sm"
+              title="即将推出"
+            >
+              <InfoIcon className="mr-1.5 h-4 w-4" />
+              元数据
+            </Button>
+            <Button
+              size="sm"
+              onClick={canManage ? handlePickFiles : undefined}
+              disabled={!canManage || uploadDocs.isPending}
+              className="h-9 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-4 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+              title={canManage ? "选择并上传文件" : "无权限上传"}
+            >
+              {uploadDocs.isPending ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  上传中…
+                </>
+              ) : (
+                <>
+                  <UploadIcon className="mr-1.5 h-4 w-4" />
+                  添加文件
+                </>
+              )}
+            </Button>
           </div>
         </div>
 
-        {/* Body */}
-        <div className="relative z-0 min-h-0 flex-1 overflow-y-auto px-6 py-5">
-          {/* Hidden file input (mounted once for the right area) */}
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept=".pdf,.docx,.doc,.md,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp"
-            multiple
-            onChange={handleFileChange}
-            className="hidden"
-          />
+        {/* Selected files preview */}
+        {canManage && files && files.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-dashed border-primary/30 bg-primary/5 px-3 py-2 text-xs">
+            <FileTextIcon className="h-3.5 w-3.5 text-primary" />
+            <span className="text-primary">已选 {files.length} 个文件</span>
+            <button
+              type="button"
+              onClick={handleCancelFiles}
+              className="ml-1 text-muted-foreground hover:text-foreground"
+              title="清除选择"
+            >
+              <XIcon className="h-3.5 w-3.5" />
+            </button>
+            <Button
+              onClick={handleUpload}
+              disabled={uploadDocs.isPending}
+              className="ml-auto h-7 rounded-md bg-primary px-3 text-xs text-primary-foreground hover:opacity-90"
+            >
+              {uploadDocs.isPending ? "上传中…" : "立即上传"}
+            </Button>
+          </div>
+        )}
 
-          {/* Loading skeleton table */}
-          {loading && (
-            <div className="overflow-hidden rounded-lg border bg-background">
-              <div className="overflow-x-auto">
-                <table className="min-w-[960px] w-full text-sm">
-                  <thead>
-                  <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
-                    <th className="w-10 px-4 py-2.5">
-                      <div className="h-3.5 w-3.5 rounded bg-muted" />
-                    </th>
-                    <th className="w-12 px-4 py-2.5">#</th>
-                    <th className="px-4 py-2.5">名称</th>
-                    <th className="px-4 py-2.5">分段</th>
-                    <th className="px-4 py-2.5">大小</th>
-                    <th className="px-4 py-2.5">召回次数</th>
-                    <th className="px-4 py-2.5">上传时间</th>
-                    <th className="px-4 py-2.5">状态</th>
-                    <th className="w-16 px-4 py-2.5"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {Array.from({ length: 8 }).map((_, i) => (
-                    <TableRowSkeleton key={i} />
-                  ))}
-                </tbody>
-                </table>
-              </div>
+        {/* Toolbar: status filters + search + sort */}
+        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+          <div className="flex flex-wrap items-center gap-2">
+            {STATUS_OPTIONS.map((opt) => {
+              const count = statusCounts[opt.value as keyof typeof statusCounts] ?? 0;
+              const active = statusFilter === opt.value;
+              return (
+                <button
+                  key={opt.value}
+                  type="button"
+                  onClick={() => setStatusFilter(opt.value)}
+                  className={`h-8 rounded-md px-3 text-sm font-medium transition-colors ${
+                    active
+                      ? "bg-primary/10 text-primary"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {opt.label}
+                  <span className="ml-1.5 text-xs opacity-60">{count}</span>
+                </button>
+              );
+            })}
+          </div>
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-0 md:w-[240px]">
+              <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <input
+                value={searchKeyword}
+                onChange={(e) => setSearchKeyword(e.target.value)}
+                placeholder="搜索"
+                className="h-8 w-full min-w-0 rounded-md border border-input bg-background/70 pl-9 pr-8 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
+              />
+              {searchKeyword && (
+                <button
+                  type="button"
+                  onClick={() => setSearchKeyword("")}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                  title="清空"
+                >
+                  <XIcon className="h-3.5 w-3.5" />
+                </button>
+              )}
             </div>
-          )}
-
-          {/* Empty: no docs & can manage */}
-          {!loading && hasNoDocs && canManage && (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-                <FileTextIcon className="h-8 w-8" />
-              </div>
-              <h2 className="mt-5 text-lg font-medium">还没有任何文档</h2>
-              <p className="mt-2 max-w-sm text-sm text-muted-foreground">
-                支持 PDF / Word / Markdown / Excel / 图片 等格式。上传后会自动进行分块与索引。
-              </p>
-              <Button
-                onClick={handlePickFiles}
-                className="mt-5 h-10 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-5 text-sm text-white shadow-sm hover:opacity-90"
+            <div className="relative">
+              <select
+                value={sortKey}
+                onChange={(e) => setSortKey(e.target.value as SortKey)}
+                className="h-8 appearance-none rounded-md border border-input bg-background/70 pl-3 pr-8 text-sm shadow-sm outline-none transition-colors focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
+                title="排序"
               >
-                <UploadIcon className="mr-2 h-4 w-4" />
-                添加文件
-              </Button>
+                {SORT_OPTIONS.map((opt) => (
+                  <option key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </option>
+                ))}
+              </select>
+              <ArrowUpDownIcon className="pointer-events-none absolute right-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             </div>
-          )}
+          </div>
+        </div>
+      </div>
 
-          {/* Empty: no docs & cannot manage */}
-          {!loading && hasNoDocs && !canManage && (
-            <div className="flex flex-col items-center justify-center py-24 text-center text-sm text-muted-foreground">
-              暂无可查看文档
+      {/* Body (可滚动) */}
+      <div className="relative z-0 min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        {/* Hidden file input (mounted once for the right area) */}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".pdf,.docx,.doc,.md,.txt,.xlsx,.xls,.png,.jpg,.jpeg,.gif,.webp,.bmp"
+          multiple
+          onChange={handleFileChange}
+          className="hidden"
+        />
+
+        {/* Loading skeleton table */}
+        {loading && (
+          <div className="overflow-hidden rounded-lg border bg-background">
+            <div className="overflow-x-auto">
+              <table className="min-w-[960px] w-full text-sm">
+                <thead>
+                <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
+                  <th className="w-10 px-4 py-2.5">
+                    <div className="h-3.5 w-3.5 rounded bg-muted" />
+                  </th>
+                  <th className="w-12 px-4 py-2.5">#</th>
+                  <th className="px-4 py-2.5">名称</th>
+                  <th className="px-4 py-2.5">分段</th>
+                  <th className="px-4 py-2.5">大小</th>
+                  <th className="px-4 py-2.5">召回次数</th>
+                  <th className="px-4 py-2.5">上传时间</th>
+                  <th className="px-4 py-2.5">状态</th>
+                  <th className="w-16 px-4 py-2.5"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {Array.from({ length: 8 }).map((_, i) => (
+                  <TableRowSkeleton key={i} />
+                ))}
+              </tbody>
+              </table>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Empty: search has results but filtered to nothing */}
-          {!loading && showEmptySearch && (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <p className="text-sm text-muted-foreground">没有找到匹配的文档</p>
-              <button
-                type="button"
-                onClick={() => setSearchKeyword("")}
-                className="mt-3 text-sm text-primary hover:underline"
-              >
-                清空搜索词
-              </button>
+        {/* Empty: no docs & can manage */}
+        {!loading && hasNoDocs && canManage && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
+              <FileTextIcon className="h-8 w-8" />
             </div>
-          )}
+            <h2 className="mt-5 text-lg font-medium">还没有任何文档</h2>
+            <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+              支持 PDF / Word / Markdown / Excel / 图片 等格式。上传后会自动进行分块与索引。
+            </p>
+            <Button
+              onClick={handlePickFiles}
+              className="mt-5 h-10 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-5 text-sm text-white shadow-sm hover:opacity-90"
+            >
+              <UploadIcon className="mr-2 h-4 w-4" />
+              添加文件
+            </Button>
+          </div>
+        )}
 
-          {/* Empty: status filter returns nothing */}
-          {!loading && showEmptyFilter && (
-            <div className="flex flex-col items-center justify-center py-24 text-center">
-              <p className="text-sm text-muted-foreground">该状态下暂无文档</p>
-              <button
-                type="button"
-                onClick={() => setStatusFilter("all")}
-                className="mt-3 text-sm text-primary hover:underline"
-              >
-                查看全部
-              </button>
-            </div>
-          )}
+        {/* Empty: no docs & cannot manage */}
+        {!loading && hasNoDocs && !canManage && (
+          <div className="flex flex-col items-center justify-center py-24 text-center text-sm text-muted-foreground">
+            暂无可查看文档
+          </div>
+        )}
 
-          {/* Doc table */}
-          {!loading && !hasNoDocs && !showEmptySearch && !showEmptyFilter && pagedDocs.length > 0 && (
-            <div className="overflow-hidden rounded-lg border bg-background">
-              <div className="overflow-x-auto">
-                <table className="min-w-[960px] w-full text-sm">
-                  <thead>
-                  <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
-                    <th className="w-10 px-4 py-2.5">
+        {/* Empty: search has results but filtered to nothing */}
+        {!loading && showEmptySearch && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <p className="text-sm text-muted-foreground">没有找到匹配的文档</p>
+            <button
+              type="button"
+              onClick={() => setSearchKeyword("")}
+              className="mt-3 text-sm text-primary hover:underline"
+            >
+              清空搜索词
+            </button>
+          </div>
+        )}
+
+        {/* Empty: status filter returns nothing */}
+        {!loading && showEmptyFilter && (
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <p className="text-sm text-muted-foreground">该状态下暂无文档</p>
+            <button
+              type="button"
+              onClick={() => setStatusFilter("all")}
+              className="mt-3 text-sm text-primary hover:underline"
+            >
+              查看全部
+            </button>
+          </div>
+        )}
+
+        {/* Doc table */}
+        {!loading && !hasNoDocs && !showEmptySearch && !showEmptyFilter && pagedDocs.length > 0 && (
+          <div className="overflow-hidden rounded-lg border bg-background">
+            <div className="overflow-x-auto">
+              <table className="min-w-[960px] w-full text-sm">
+                <thead>
+                <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium text-muted-foreground">
+                  <th className="w-10 px-4 py-2.5">
+                    <input
+                      type="checkbox"
+                      disabled
+                      className="h-3.5 w-3.5 cursor-not-allowed rounded border-input"
+                      title="批量操作 (即将推出)"
+                    />
+                  </th>
+                  <th className="w-12 px-4 py-2.5">#</th>
+                  <th className="px-4 py-2.5">名称</th>
+                  <th className="px-4 py-2.5">分段</th>
+                  <th className="px-4 py-2.5">大小</th>
+                  <th className="px-4 py-2.5">召回次数</th>
+                  <th className="px-4 py-2.5">上传时间</th>
+                  <th className="px-4 py-2.5">状态</th>
+                  <th className="w-24 px-4 py-2.5 text-right">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                {pagedDocs.map((doc: any, idx: number) => (
+                  <tr
+                    key={doc.id}
+                    className="group border-b border-border/60 transition-colors last:border-b-0 hover:bg-muted/30"
+                  >
+                    <td className="px-4 py-3">
                       <input
                         type="checkbox"
                         disabled
                         className="h-3.5 w-3.5 cursor-not-allowed rounded border-input"
                         title="批量操作 (即将推出)"
                       />
-                    </th>
-                    <th className="w-12 px-4 py-2.5">#</th>
-                    <th className="px-4 py-2.5">名称</th>
-                    <th className="px-4 py-2.5">分段</th>
-                    <th className="px-4 py-2.5">大小</th>
-                    <th className="px-4 py-2.5">召回次数</th>
-                    <th className="px-4 py-2.5">上传时间</th>
-                    <th className="px-4 py-2.5">状态</th>
-                    <th className="w-24 px-4 py-2.5 text-right">操作</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {pagedDocs.map((doc: any, idx: number) => (
-                    <tr
-                      key={doc.id}
-                      className="group border-b border-border/60 transition-colors last:border-b-0 hover:bg-muted/30"
-                    >
-                      <td className="px-4 py-3">
-                        <input
-                          type="checkbox"
+                    </td>
+                    <td className="px-4 py-3 text-xs text-muted-foreground">
+                      {(page - 1) * pageSize + idx + 1}
+                    </td>
+                    <td className="max-w-[280px] px-4 py-3">
+                      <div className="flex min-w-0 items-center gap-2.5">
+                        <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${fileTypeTheme(doc.file_type)}`}>
+                          <FileIcon className="h-3.5 w-3.5" />
+                        </div>
+                        <div className="min-w-0">
+                          <div className="truncate text-sm font-medium leading-snug" title={doc.title}>
+                            {doc.title}
+                          </div>
+                          <div className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground/80">
+                            {(doc.file_type || "file").split("/").pop()?.toUpperCase() || "FILE"}
+                          </div>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <span className="rounded-md bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground">通用</span>
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                      {formatBytes(doc.file_size)}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                      {doc.hit_count !== undefined && doc.hit_count !== null ? doc.hit_count : "—"}
+                    </td>
+                    <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
+                      {formatDate(doc.created_at)}
+                    </td>
+                    <td className="px-4 py-3">
+                      <DocStatus kbId={kbId} doc={doc} />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="flex items-center justify-end gap-1">
+                        {(doc.status === "pending" || doc.status === "error") && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary"
+                            onClick={() => handleReindex(doc.id)}
+                            disabled={reindexDoc.isPending}
+                            title="重新索引"
+                          >
+                            <RefreshCwIcon className="h-3.5 w-3.5" />
+                          </Button>
+                        )}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => handleDelete(doc.id)}
+                          title="删除文档"
+                        >
+                          <TrashIcon className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           disabled
-                          className="h-3.5 w-3.5 cursor-not-allowed rounded border-input"
-                          title="批量操作 (即将推出)"
-                        />
-                      </td>
-                      <td className="px-4 py-3 text-xs text-muted-foreground">
-                        {(page - 1) * pageSize + idx + 1}
-                      </td>
-                      <td className="max-w-[280px] px-4 py-3">
-                        <div className="flex min-w-0 items-center gap-2.5">
-                          <div className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-md border ${fileTypeTheme(doc.file_type)}`}>
-                            <FileIcon className="h-3.5 w-3.5" />
-                          </div>
-                          <div className="min-w-0">
-                            <div className="truncate text-sm font-medium leading-snug" title={doc.title}>
-                              {doc.title}
-                            </div>
-                            <div className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground/80">
-                              {(doc.file_type || "file").split("/").pop()?.toUpperCase() || "FILE"}
-                            </div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className="rounded-md bg-muted/50 px-2 py-0.5 text-xs text-muted-foreground">通用</span>
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
-                        {formatBytes(doc.file_size)}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
-                        {doc.hit_count !== undefined && doc.hit_count !== null ? doc.hit_count : "—"}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-sm text-muted-foreground">
-                        {formatDate(doc.created_at)}
-                      </td>
-                      <td className="px-4 py-3">
-                        <DocStatus kbId={kbId} doc={doc} />
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex items-center justify-end gap-1">
-                          {(doc.status === "pending" || doc.status === "error") && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary"
-                              onClick={() => handleReindex(doc.id)}
-                              disabled={reindexDoc.isPending}
-                              title="重新索引"
-                            >
-                              <RefreshCwIcon className="h-3.5 w-3.5" />
-                            </Button>
-                          )}
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
-                            onClick={() => handleDelete(doc.id)}
-                            title="删除文档"
-                          >
-                            <TrashIcon className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            disabled
-                            className="h-7 w-7 text-muted-foreground/30"
-                            title="更多 (即将推出)"
-                          >
-                            <MoreHorizontalIcon className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-                </table>
-              </div>
+                          className="h-7 w-7 text-muted-foreground/30"
+                          title="更多 (即将推出)"
+                        >
+                          <MoreHorizontalIcon className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+              </table>
+            </div>
 
-              {/* Pagination */}
-              <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-3 text-sm">
-                <div className="text-xs text-muted-foreground">
-                  共 {totalItems} 个文档
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={() => setPage((p) => Math.max(1, p - 1))}
-                    disabled={page <= 1}
+            {/* Pagination */}
+            <div className="flex flex-wrap items-center justify-between gap-3 border-t bg-muted/20 px-4 py-3 text-sm">
+              <div className="text-xs text-muted-foreground">
+                共 {totalItems} 个文档
+              </div>
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={page <= 1}
+                >
+                  <ChevronLeftIcon className="mr-1 h-3.5 w-3.5" />
+                  上一页
+                </Button>
+                <span className="min-w-[60px] text-center text-xs text-muted-foreground">
+                  {page} / {totalPages}
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-8 text-xs"
+                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                  disabled={page >= totalPages}
+                >
+                  下一页
+                  <ChevronRightIcon className="ml-1 h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                <span>每页</span>
+                {[10, 25, 50].map((size) => (
+                  <button
+                    key={size}
+                    type="button"
+                    onClick={() => setPageSize(size)}
+                    className={`h-7 rounded-md px-2 text-xs transition-colors ${
+                      pageSize === size
+                        ? "bg-primary/10 text-primary"
+                        : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                    }`}
                   >
-                    <ChevronLeftIcon className="mr-1 h-3.5 w-3.5" />
-                    上一页
-                  </Button>
-                  <span className="min-w-[60px] text-center text-xs text-muted-foreground">
-                    {page} / {totalPages}
-                  </span>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-8 text-xs"
-                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                    disabled={page >= totalPages}
-                  >
-                    下一页
-                    <ChevronRightIcon className="ml-1 h-3.5 w-3.5" />
-                  </Button>
-                </div>
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span>每页</span>
-                  {[10, 25, 50].map((size) => (
-                    <button
-                      key={size}
-                      type="button"
-                      onClick={() => setPageSize(size)}
-                      className={`h-7 rounded-md px-2 text-xs transition-colors ${
-                        pageSize === size
-                          ? "bg-primary/10 text-primary"
-                          : "text-muted-foreground hover:bg-muted hover:text-foreground"
-                      }`}
-                    >
-                      {size}
-                    </button>
-                  ))}
-                </div>
+                    {size}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ====== Retrieval Test Panel (MVP) ======
+type RetrievalChunk = {
+  chunk_id: string | null;
+  document_id: string | null;
+  document_title: string;
+  content: string;
+  score: number;
+  rank: number;
+  metadata: Record<string, any>;
+};
+
+type RetrievalTimings = {
+  embedding_ms?: number;
+  retrieval_ms?: number;
+  vector_sql_ms?: number;
+  bm25_ms?: number;
+  rrf_ms?: number;
+  rerank_ms?: number;
+  retrieval_total_ms?: number;
+  rerank_decision?: string;
+  rerank_reason?: string;
+  total_ms?: number;
+};
+
+type RetrievalResult = {
+  query: string;
+  items: RetrievalChunk[];
+  timings: RetrievalTimings;
+};
+
+function scoreColor(score: number): string {
+  if (score >= 0.7) return "bg-emerald-500";
+  if (score >= 0.4) return "bg-blue-500";
+  return "bg-amber-500";
+}
+
+function scoreTextColor(score: number): string {
+  if (score >= 0.7) return "text-emerald-600 dark:text-emerald-400";
+  if (score >= 0.4) return "text-blue-600 dark:text-blue-400";
+  return "text-amber-600 dark:text-amber-400";
+}
+
+function RetrievalTestPanel({ kbId }: { kbId: string }) {
+  const [query, setQuery] = useState("");
+  const [topK, setTopK] = useState(5);
+  const [threshold, setThreshold] = useState(0.2);
+  const [useRerank, setUseRerank] = useState(true);
+  const retrieval = useRetrievalTest();
+
+  const result = retrieval.data as RetrievalResult | undefined;
+  const items = result?.items || [];
+  const timings = result?.timings;
+
+  const onSubmit = () => {
+    const q = query.trim();
+    if (!q) return;
+    retrieval.mutate({
+      kbId,
+      body: { query: q, top_k: topK, threshold, use_rerank: useRerank },
+    });
+  };
+
+  const rerankDecision = timings?.rerank_decision;
+  const rerankBadge =
+    rerankDecision === "reranked"
+      ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-400"
+      : "border-muted-foreground/20 bg-muted/40 text-muted-foreground";
+
+  const timingMetrics: { label: string; value?: number; suffix?: string }[] = [
+    { label: "向量化", value: timings?.embedding_ms, suffix: "ms" },
+    { label: "检索", value: timings?.retrieval_ms, suffix: "ms" },
+    { label: "向量 SQL", value: timings?.vector_sql_ms, suffix: "ms" },
+    { label: "BM25", value: timings?.bm25_ms, suffix: "ms" },
+    { label: "RRF 融合", value: timings?.rrf_ms, suffix: "ms" },
+    { label: "重排序", value: timings?.rerank_ms, suffix: "ms" },
+    { label: "总耗时", value: timings?.total_ms, suffix: "ms" },
+  ];
+
+  return (
+    <div className="flex h-full min-h-0 flex-col">
+      {/* Control panel */}
+      <div className="border-b px-6 py-5">
+        <div className="mx-auto max-w-3xl">
+          <div className="flex items-center gap-2">
+            <FlaskConicalIcon className="h-4 w-4 text-primary" />
+            <h1 className="text-lg font-semibold">召回测试</h1>
+            <Badge variant="secondary" className="rounded-md px-2 py-0.5 text-[10px] font-normal">
+              MVP
+            </Badge>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            输入查询语句，实时查看向量召回的分块与耗时，不影响正式聊天链路。
+          </p>
+
+          <textarea
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            rows={3}
+            placeholder="例如: 如何申请报销?"
+            className="mt-4 w-full resize-none rounded-lg border border-input bg-background/70 p-3 text-sm shadow-sm outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
+          />
+
+          <div className="mt-3 flex flex-wrap items-center gap-3">
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              召回数量
+              <select
+                value={topK}
+                onChange={(e) => setTopK(Number(e.target.value))}
+                className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
+              >
+                {[3, 5, 10, 20].map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="flex items-center gap-2 text-sm text-muted-foreground">
+              相似度阈值
+              <select
+                value={threshold}
+                onChange={(e) => setThreshold(Number(e.target.value))}
+                className="h-8 rounded-md border border-input bg-background/70 pl-2 pr-7 text-sm shadow-sm outline-none focus:border-primary/40"
+              >
+                {[0.1, 0.2, 0.3, 0.5].map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={() => setUseRerank((v) => !v)}
+              className={`flex h-8 items-center gap-2 rounded-md border px-3 text-sm transition-colors ${
+                useRerank
+                  ? "border-primary/40 bg-primary/10 text-primary"
+                  : "border-input text-muted-foreground"
+              }`}
+            >
+              <span
+                className={`flex h-3.5 w-6 items-center rounded-full p-0.5 transition-colors ${
+                  useRerank ? "bg-primary" : "bg-muted"
+                }`}
+              >
+                <span
+                  className={`block h-2.5 w-2.5 rounded-full bg-white shadow-sm transition-transform ${
+                    useRerank ? "translate-x-2.5" : "translate-x-0"
+                  }`}
+                />
+              </span>
+              重排序
+            </button>
+
+            <Button
+              onClick={onSubmit}
+              disabled={!query.trim() || retrieval.isPending}
+              className="ml-auto h-9 rounded-lg bg-[linear-gradient(90deg,rgba(37,99,235,1),rgba(147,51,234,1))] px-4 text-sm text-white shadow-sm hover:opacity-90 disabled:opacity-50"
+            >
+              {retrieval.isPending ? (
+                <>
+                  <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />
+                  测试中…
+                </>
+              ) : (
+                <>
+                  <FlaskConicalIcon className="mr-1.5 h-4 w-4" />
+                  开始测试
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
+      </div>
+
+      {/* Results */}
+      <div className="relative z-0 min-h-0 flex-1 overflow-y-auto px-6 py-5">
+        <div className="mx-auto max-w-3xl">
+          {retrieval.isPending && (
+            <div className="flex flex-col items-center justify-center py-20 text-center text-sm text-muted-foreground">
+              <Loader2 className="mb-3 h-6 w-6 animate-spin text-primary" />
+              正在召回分块…
+            </div>
+          )}
+
+          {retrieval.isError && (
+            <div className="flex flex-col items-center justify-center py-20 text-center">
+              <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400">
+                测试失败：{(retrieval.error as any)?.message || "未知错误"}
               </div>
             </div>
           )}
+
+          {!retrieval.isPending && !retrieval.isError && items.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-20 text-center text-sm text-muted-foreground">
+              输入查询语句后点击「开始测试」，召回结果会显示在这里。
+            </div>
+          )}
+
+          {!retrieval.isPending && !retrieval.isError && items.length > 0 && (
+            <>
+              {/* Summary */}
+              <div className="mb-4 rounded-lg border bg-background p-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div className="text-sm">
+                    <span className="text-muted-foreground">召回 </span>
+                    <span className="font-semibold text-foreground">{items.length}</span>
+                    <span className="text-muted-foreground"> 个分块</span>
+                  </div>
+                  <Badge variant="outline" className={`rounded-md px-2 py-0.5 text-xs font-normal ${rerankBadge}`}>
+                    {rerankDecision === "reranked" ? "已重排序" : "未重排序"}
+                  </Badge>
+                </div>
+
+                {timings?.rerank_reason && timings.rerank_reason !== "not_evaluated" && (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    重排序决策：{timings.rerank_reason}
+                  </p>
+                )}
+
+                <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+                  {timingMetrics.map((m) => (
+                    <div
+                      key={m.label}
+                      className="rounded-md bg-muted/40 px-2.5 py-2 text-center"
+                    >
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                        {m.label}
+                      </div>
+                      <div className="mt-0.5 text-sm font-medium text-foreground">
+                        {m.value !== undefined && m.value !== null ? `${m.value}${m.suffix || ""}` : "—"}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Chunk cards */}
+              <div className="flex flex-col gap-3">
+                {items.map((item) => (
+                  <div
+                    key={item.chunk_id || item.rank}
+                    className="rounded-lg border bg-background p-4 transition-colors hover:border-primary/30"
+                  >
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-xs font-semibold text-primary">
+                          {item.rank}
+                        </span>
+                        <span className="truncate text-sm font-medium text-foreground" title={item.document_title}>
+                          {item.document_title || "未知文档"}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className={`text-sm font-semibold ${scoreTextColor(item.score)}`}>
+                          {(item.score * 100).toFixed(1)}%
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Score bar */}
+                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                      <div
+                        className={`h-full rounded-full ${scoreColor(item.score)}`}
+                        style={{ width: `${Math.max(2, Math.min(100, item.score * 100))}%` }}
+                      />
+                    </div>
+
+                    <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
+                      {item.content}
+                    </p>
+
+                    <div className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+                      <span className="font-mono">chunk_id: {item.chunk_id || "—"}</span>
+                      <span className="font-mono">doc_id: {item.document_id || "—"}</span>
+                    </div>
+
+                    {item.metadata && Object.keys(item.metadata).length > 0 && (
+                      <details className="mt-2 group">
+                        <summary className="cursor-pointer text-[11px] text-muted-foreground hover:text-foreground">
+                          metadata
+                        </summary>
+                        <pre className="mt-1 overflow-x-auto rounded-md bg-muted/50 p-2 font-mono text-[11px] leading-5 text-foreground/80">
+                          {JSON.stringify(item.metadata, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </>
+          )}
         </div>
-      </main>
+      </div>
     </div>
   );
 }

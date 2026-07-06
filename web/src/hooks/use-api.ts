@@ -132,6 +132,24 @@ export function useReindexDocument() {
   });
 }
 
+/**
+ * 召回测试 (MVP)
+ * @param kbId 知识库 ID
+ * @param body { query, top_k, threshold, use_rerank }
+ * @returns RetrievalTestResult { query, items, timings }
+ */
+export function useRetrievalTest() {
+  return useMutation({
+    mutationFn: ({
+      kbId,
+      body,
+    }: {
+      kbId: string;
+      body: { query: string; top_k: number; threshold: number; use_rerank: boolean };
+    }) => api.retrievalTest(kbId, body),
+  });
+}
+
 export function useIndexingStatus(
   kbId: string, 
   docId: string, 

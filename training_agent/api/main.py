@@ -48,12 +48,13 @@ async def health_check():
     return Response(data={"status": "ok"})
 
 
-from api.routers import auth, kb, docs, chat, stats, ppt, pdf, departments, sources, platform, agent
+from api.routers import auth, kb, docs, chat, stats, ppt, pdf, departments, sources, platform, agent, retrieval_test
 
 app.include_router(auth.router, prefix="/api", tags=["auth"])
 app.include_router(departments.router, prefix="/api", tags=["departments"])
 app.include_router(kb.router, prefix="/api/kb", tags=["knowledge_base"])
 app.include_router(docs.router, prefix="/api/kb/{kb_id}/docs", tags=["documents"])
+app.include_router(retrieval_test.router, prefix="/api/kb/{kb_id}", tags=["retrieval_test"])
 app.include_router(sources.router, prefix="/api/sources", tags=["sources"])
 app.include_router(platform.router, prefix="/api", tags=["platform"])
 app.include_router(chat.router, prefix="/api", tags=["chat"])
