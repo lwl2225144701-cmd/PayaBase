@@ -344,7 +344,7 @@ async def get_search_metrics(
     # stats access follows the same authenticated surface as the existing stats APIs
     del current_user
     try:
-        async with httpx.AsyncClient(timeout=settings.search_timeout_sec) as client:
+        async with httpx.AsyncClient(timeout=settings.search_timeout_sec, trust_env=False) as client:
             resp = await client.get(f"{settings.search_service_url}/stats")
             resp.raise_for_status()
             payload = resp.json()

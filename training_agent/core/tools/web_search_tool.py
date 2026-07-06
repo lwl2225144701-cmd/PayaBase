@@ -63,7 +63,7 @@ class WebSearchTool(BaseTool):
         logger.info(f"[WebSearchTool] q={query}, engine={engine}")
 
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, trust_env=False) as client:
                 resp = client.get(url, params=params)
                 resp.raise_for_status()
                 data = resp.json()

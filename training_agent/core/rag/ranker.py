@@ -49,7 +49,7 @@ class Reranker:
         texts = [chunk["content"] for chunk in chunks]
 
         try:
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=30.0, trust_env=False) as client:
                 response = client.post(
                     f"{self.base_url}/rerank",
                     json={
