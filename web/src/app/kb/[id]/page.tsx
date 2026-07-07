@@ -816,8 +816,14 @@ function DocumentsTabContent(props: DocumentsTabProps) {
 
         {/* Empty: no docs & cannot manage */}
         {!loading && hasNoDocs && !canManage && (
-          <div className="flex flex-col items-center justify-center py-24 text-center text-sm text-muted-foreground">
-            暂无可查看文档
+          <div className="flex flex-col items-center justify-center py-24 text-center">
+            <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-muted text-muted-foreground">
+              <FileTextIcon className="h-8 w-8" />
+            </div>
+            <h2 className="mt-5 text-lg font-medium">暂无可查看文档</h2>
+            <p className="mt-2 max-w-sm text-sm text-muted-foreground">
+              该知识库还没有上传任何文档，或你暂无查看权限。
+            </p>
           </div>
         )}
 
@@ -924,14 +930,14 @@ function DocumentsTabContent(props: DocumentsTabProps) {
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">
                         {(doc.status === "pending" || doc.status === "error") && (
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary"
-                            onClick={() => handleReindex(doc.id)}
-                            disabled={reindexDoc.isPending}
-                            title="重新索引"
-                          >
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-primary/10 hover:text-primary"
+                          onClick={() => handleReindex(doc.id)}
+                          disabled={!canManage || reindexDoc.isPending}
+                          title="重新索引"
+                        >
                             <RefreshCwIcon className="h-3.5 w-3.5" />
                           </Button>
                         )}
@@ -940,6 +946,7 @@ function DocumentsTabContent(props: DocumentsTabProps) {
                           size="icon"
                           className="h-7 w-7 text-muted-foreground/60 transition-colors hover:bg-destructive/10 hover:text-destructive"
                           onClick={() => handleDelete(doc.id)}
+                          disabled={!canManage}
                           title="删除文档"
                         >
                           <TrashIcon className="h-3.5 w-3.5" />
