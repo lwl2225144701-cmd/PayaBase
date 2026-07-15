@@ -141,6 +141,12 @@ services:
       target: celery-runtime
     env_file:
       - ../.env
+    # 绕过宿主 Clash fake-ip DNS 毒化：容器内用真实 DNS 解析外部域名后直连出网
+    # （sensenova 为国内服务，直连可达；内部服务 postgres/redis/minio/vectord/rerankd/searchd
+    #  走 docker 服务名，不受影响）
+    dns:
+      - 223.5.5.5
+      - 8.8.8.8
     environment:
       - PYTHONUNBUFFERED=1
       - POSTGRES_HOST=postgres
