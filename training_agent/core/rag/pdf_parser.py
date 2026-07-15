@@ -1,4 +1,6 @@
+import base64
 import io
+import logging
 import uuid
 from typing import Optional
 
@@ -9,6 +11,11 @@ from minio import Minio
 
 from core.config import settings
 
+
+logger = logging.getLogger(__name__)
+
+# 单页抽取文字少于该字数时，视为扫描版/图片版页面，触发 OCR 兜底
+MIN_TEXT_LEN = 50
 
 SUPPORTED_IMAGE_FORMATS = {".jpeg", ".jpg", ".png", ".jp2", ".gif", ".bmp", ".tiff", ".tif"}
 
@@ -71,10 +78,42 @@ class PDFParser:
         return documents
 
     def _extract_text(self, page) -> str:
-        """提取页面文本"""
-        text_page = page.get_textpage()
-        text = text_page.get_text_bounded()
-        return text or ""
+        """提取页面文本；若文字过少(扫描版/图片版)，自动 OCR 兜底"""
+        text = ""
+        try:
+            text_page = page.get_textpage()
+            text = text_page.get_text_bounded() or ""
+        except Exception as e:
+            logger.warning(f"[PDF] 文字层提取失败, 尝试OCR: {e}")
+
+        if len(text.strip()) < MIN_TEXT_LEN:
+            ocr_text = self._ocr_page(page)
+            # OCR 结果比原文字层更丰富时才替换，避免 OCR 反而更差
+            if ocr_text and len(ocr_text.strip()) > len(text.strip()):
+                logger.info(f"[PDF OCR] 页面文字层仅 {len(text.strip())} 字, 已用OCR补充为 {len(ocr_text.strip())} 字")
+                return ocr_text
+        return text
+
+    def _ocr_page(self, page) -> str:
+        """将整页渲染为图片, 调用 Vision LLM 转录文字 (扫描版 PDF 兜底)"""
+        try:
+            from core.llm.factory import get_llm_client, is_vision_enabled
+            if not is_vision_enabled():
+                return ""
+            from core.prompts.vision import OCR_PROMPT
+
+            pil_image = page.render(scale=2.0).to_pil()
+            buf = io.BytesIO()
+            pil_image.save(buf, format="PNG")
+            img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+
+            result = get_llm_client("vision").chat_with_image(
+                img_b64, OCR_PROMPT, mime_type="image/png"
+            )
+            return (result or "").strip()
+        except Exception as e:
+            logger.warning(f"[PDF OCR] 页面识别失败, 回退原文字: {e}")
+            return ""
 
     def _extract_images(
         self,
