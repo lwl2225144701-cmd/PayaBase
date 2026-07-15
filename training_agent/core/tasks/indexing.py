@@ -796,7 +796,7 @@ def index_document_task(self, document_id: str):
             
             chunk.setdefault("chunk_type", "recursive")
             # 避免瞬间打爆 LLM API 的 RPM 配额（429 Too Many Requests）
-            time.sleep(2)
+            time.sleep(5)
         
         logger.info(f"[Stage5] 摘要和HyDE生成完成")
         
