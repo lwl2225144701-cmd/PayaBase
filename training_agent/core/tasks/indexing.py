@@ -478,12 +478,19 @@ def generate_summary(text: str, max_length: int = 100) -> str:
     llm = get_llm_client("chat")
     prompt = SUMMARY_USER_PROMPT.format(max_length=max_length, text=text[:2000])
 
-    try:
-        summary = llm.chat([{"role": "system", "content": SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-        return summary.strip()[:max_length]
-    except Exception as e:
-        logger.warning(f"[Summary] 生成失败: {e}")
-        return text[:max_length]
+    for attempt in range(3):
+        try:
+            summary = llm.chat([{"role": "system", "content": SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
+            return summary.strip()[:max_length]
+        except Exception as e:
+            err_str = str(e)
+            is_rpm_limit = "429" in err_str or "rpm exhausted" in err_str or "RateLimitError" in str(type(e).__name__)
+            if is_rpm_limit and attempt < 2:
+                logger.warning(f"[Summary] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
+                time.sleep(60)
+                continue
+            logger.warning(f"[Summary] 生成失败: {e}")
+            return text[:max_length]
 
 
 def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[str]:
@@ -496,13 +503,20 @@ def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[s
     llm = get_llm_client("chat")
     prompt = HYDE_USER_PROMPT.format(num_questions=num_questions, text=text[:1500])
 
-    try:
-        response = llm.chat([{"role": "system", "content": HYDE_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-        questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
-        return questions[:num_questions]
-    except Exception as e:
-        logger.warning(f"[HyDE] 生成失败: {e}")
-        return []
+    for attempt in range(3):
+        try:
+            response = llm.chat([{"role": "system", "content": HYDE_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
+            questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
+            return questions[:num_questions]
+        except Exception as e:
+            err_str = str(e)
+            is_rpm_limit = "429" in err_str or "rpm exhausted" in err_str or "RateLimitError" in str(type(e).__name__)
+            if is_rpm_limit and attempt < 2:
+                logger.warning(f"[HyDE] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
+                time.sleep(60)
+                continue
+            logger.warning(f"[HyDE] 生成失败: {e}")
+            return []
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
