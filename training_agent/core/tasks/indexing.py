@@ -14,6 +14,7 @@ import json
 import logging
 import uuid
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 
@@ -28,6 +29,8 @@ from core.prompts.indexing import (
     SUMMARY_USER_PROMPT,
     HYDE_SYSTEM_PROMPT,
     HYDE_USER_PROMPT,
+    COMBINED_SYSTEM_PROMPT,
+    COMBINED_USER_PROMPT,
 )
 from models.tables import Chunk, Document
 
@@ -465,32 +468,63 @@ def semantic_chunk_by_embedding(text: str, chunk_size: int = 500, similarity_thr
     return chunks
 
 
-def generate_summary(text: str, max_length: int = 100) -> str:
-    """策略3: 摘要化处理 - 为长段落生成简短摘要
-    
-    使用LLM生成摘要，使得检索更具判别力
+def _clean_summary_prefix(text: str) -> str:
+    """去掉模型可能残留的'摘要：''本文'等前缀，统一向量化/展示格式"""
+    import re
+    cleaned = re.sub(r'^(摘要|本文|内容概述|概括?)[：:]\s*', '', text.strip())
+    return cleaned.strip()
+
+
+def _parse_combined_response(resp: str, max_length: int, num_questions: int):
+    """解析合并调用的返回，按【问题】分段拆出摘要与问题列表"""
+    import re
+    text = resp.strip()
+    parts = re.split(r'【问题】', text, maxsplit=1)
+    summary_part = parts[0]
+    questions_part = parts[1] if len(parts) > 1 else ""
+
+    summary = _clean_summary_prefix(summary_part).replace("【摘要】", "").strip()[:max_length]
+
+    questions = []
+    for line in questions_part.split('\n'):
+        q = re.sub(r'^[0-9]+[.、)]\s*', '', line.strip())
+        if q:
+            questions.append(q)
+    return summary, questions[:num_questions]
+
+
+def generate_summary_and_questions(text: str, max_length: int = 100, num_questions: int = 3):
+    """策略3合并调用: 一次LLM同时产出摘要与假设性问题(HyDE)
+
+    相比分别调用，长chunk的API请求数减半；保留429 RPM限流的60s重试兜底。
+    返回 (summary, questions)。
     """
     from core.llm.factory import get_llm_client
 
-    if len(text) < 200:
-        return text
-
     llm = get_llm_client("chat")
-    prompt = SUMMARY_USER_PROMPT.format(max_length=max_length, text=text[:2000])
+    prompt = COMBINED_USER_PROMPT.format(
+        max_length=max_length, num_questions=num_questions, text=text[:2000]
+    )
 
     for attempt in range(3):
         try:
-            summary = llm.chat([{"role": "system", "content": SUMMARY_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-            return summary.strip()[:max_length]
+            resp = llm.chat([
+                {"role": "system", "content": COMBINED_SYSTEM_PROMPT},
+                {"role": "user", "content": prompt},
+            ])
+            summary, questions = _parse_combined_response(resp, max_length, num_questions)
+            if not summary:
+                summary = text[:max_length]
+            return summary, questions
         except Exception as e:
             err_str = str(e)
             is_rpm_limit = "429" in err_str or "rpm exhausted" in err_str or "RateLimitError" in str(type(e).__name__)
             if is_rpm_limit and attempt < 2:
-                logger.warning(f"[Summary] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
+                logger.warning(f"[摘要+HyDE] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
                 time.sleep(60)
                 continue
-            logger.warning(f"[Summary] 生成失败: {e}")
-            return text[:max_length]
+            logger.warning(f"[摘要+HyDE] 生成失败: {e}")
+            return text[:max_length], []
 
 
 def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[str]:
@@ -599,7 +633,7 @@ def build_chunks_data(documents: list[LCDocument], file_ext: str) -> list[dict]:
 
 def build_embedding_text(chunk: dict) -> str:
     """Use concise, high-signal text for embedding."""
-    summary = (chunk.get("summary") or "").strip()
+    summary = _clean_summary_prefix(chunk.get("summary") or "").strip()
     content = (chunk.get("content") or "").strip()
     chunk_type = chunk.get("chunk_type", "")
 
@@ -786,30 +820,39 @@ def index_document_task(self, document_id: str):
         
         update_document_status(document_id, "indexing", progress=80, chunk_count=len(chunks_data))
         
-        # ===== Stage6: 生成摘要和假设性问题 =====
-        logger.info(f"[Stage5] 开始生成摘要和HyDE问题")
-        for i, chunk in enumerate(chunks_data):
-            # 只对长chunk生成摘要
-            if len(chunk["content"]) > 200:
-                try:
-                    chunk["summary"] = generate_summary(chunk["content"])
-                    logger.debug(f"[Stage5] Chunk {i+1} 摘要生成成功: {chunk['summary'][:50]}...")
-                except Exception as e:
-                    logger.warning(f"[Stage5] Chunk {i+1} 摘要生成失败: {e}")
-                    chunk["summary"] = chunk["content"][:100]
+        # ===== Stage6: 生成摘要和假设性问题（并发处理） =====
+        logger.info(f"[Stage5] 开始生成摘要和HyDE问题, 并发处理 {len(chunks_data)} 个chunk")
+
+        def _enrich_chunk(chunk: dict):
+            """单个chunk的LLM增强: 长chunk走合并调用(摘要+HyDE一次出), 短chunk仅生成HyDE"""
+            content = chunk["content"]
+            if len(content) > 200:
+                summary, questions = generate_summary_and_questions(content)
             else:
-                chunk["summary"] = chunk["content"][:100]
-            
-            # 生成假设性问题(HyDE)
-            try:
-                chunk["hypothetical_questions"] = generate_hypothetical_questions(chunk["content"])
-                logger.debug(f"[Stage5] Chunk {i+1} HyDE生成成功: {len(chunk['hypothetical_questions'])} 个问题")
-            except Exception as e:
-                logger.warning(f"[Stage5] Chunk {i+1} HyDE生成失败: {e}")
-                chunk["hypothetical_questions"] = []
-            
-            chunk.setdefault("chunk_type", "recursive")
-        
+                summary = content[:100]
+                questions = generate_hypothetical_questions(content)
+            return summary, questions
+
+        enriched: list = [None] * len(chunks_data)
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_idx = {
+                executor.submit(_enrich_chunk, c): i
+                for i, c in enumerate(chunks_data)
+            }
+            for fut in as_completed(future_to_idx):
+                i = future_to_idx[fut]
+                try:
+                    summary, questions = fut.result()
+                except Exception as e:
+                    logger.warning(f"[Stage5] Chunk {i+1} 增强失败: {e}")
+                    summary, questions = chunks_data[i]["content"][:100], []
+                enriched[i] = (summary, questions)
+
+        for i, (summary, questions) in enumerate(enriched):
+            chunks_data[i]["summary"] = summary
+            chunks_data[i]["hypothetical_questions"] = questions
+            chunks_data[i].setdefault("chunk_type", "recursive")
+
         logger.info(f"[Stage5] 摘要和HyDE生成完成")
         
         # ===== Stage7: 向量化 =====
