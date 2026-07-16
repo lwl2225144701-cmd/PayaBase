@@ -2,6 +2,7 @@ import base64
 import io
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 
 import pypdfium2
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 # 单页抽取文字少于该字数时，视为扫描版/图片版页面，触发 OCR 兜底
 MIN_TEXT_LEN = 50
+
+# OCR 并发数：扫描版 PDF 逐页调 Vision LLM，并发可显著缩短整体耗时
+OCR_CONCURRENCY = 4
 
 SUPPORTED_IMAGE_FORMATS = {".jpeg", ".jpg", ".png", ".jp2", ".gif", ".bmp", ".tiff", ".tif"}
 
@@ -49,16 +53,57 @@ class PDFParser:
         documents = []
         self._uploaded_files = []
 
-        for page_num in range(len(pdf)):
-            page = pdf[page_num]
+        n_pages = len(pdf)
 
-            text = self._extract_text(page)
+        # 1. 先并发无关地抽取全文字层（本地操作，快），并标记需要 OCR 的页面
+        page_texts: dict[int, str] = {}
+        ocr_needed: list[int] = []
+        for page_num in range(n_pages):
+            page = pdf[page_num]
+            text = self._extract_text_layer(page)
+            page_texts[page_num] = text
+            if len(text.strip()) < MIN_TEXT_LEN:
+                ocr_needed.append(page_num)
+
+        # 2. 并发对需 OCR 的页面调用 Vision LLM 转录文字
+        ocr_results: dict[int, str] = {}
+        if ocr_needed:
+            logger.info(
+                f"[PDF OCR] 共 {n_pages} 页, {len(ocr_needed)} 页需OCR, "
+                f"并发数={OCR_CONCURRENCY}"
+            )
+            with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as executor:
+                future_to_page = {
+                    executor.submit(self._ocr_page, pdf, pn): pn
+                    for pn in ocr_needed
+                }
+                for future in future_to_page:
+                    pn = future_to_page[future]
+                    try:
+                        ocr_results[pn] = future.result()
+                    except Exception as e:
+                        logger.warning(f"[PDF OCR] 页面 {pn + 1} 并发任务异常, 回退: {e}")
+                        ocr_results[pn] = ""
+
+        # 3. 组装文档：OCR 文本比原文字层更丰富时才替换
+        for page_num in range(n_pages):
+            raw_text = page_texts[page_num]
+            ocr_text = ocr_results.get(page_num, "")
+            if ocr_text and len(ocr_text.strip()) > len(raw_text.strip()):
+                if page_num in ocr_needed:
+                    logger.info(
+                        f"[PDF OCR] 页面 {page_num + 1} 文字层仅 {len(raw_text.strip())} 字, "
+                        f"已用OCR补充为 {len(ocr_text.strip())} 字"
+                    )
+                final_text = ocr_text
+            else:
+                final_text = raw_text
 
             image_urls = self._extract_images(
-                page, kb_id, doc_id, tenant_id, page_num
+                pdf[page_num], kb_id, doc_id, tenant_id, page_num
             )
 
-            content = text
+            content = final_text
             for img_url in image_urls:
                 content += f"\n![image]({img_url})\n"
 
@@ -77,31 +122,27 @@ class PDFParser:
 
         return documents
 
-    def _extract_text(self, page) -> str:
-        """提取页面文本；若文字过少(扫描版/图片版)，自动 OCR 兜底"""
-        text = ""
+    def _extract_text_layer(self, page) -> str:
+        """仅抽取页面文字层（不触发 OCR）"""
         try:
             text_page = page.get_textpage()
-            text = text_page.get_text_bounded() or ""
+            return text_page.get_text_bounded() or ""
         except Exception as e:
-            logger.warning(f"[PDF] 文字层提取失败, 尝试OCR: {e}")
+            logger.warning(f"[PDF] 文字层提取失败: {e}")
+            return ""
 
-        if len(text.strip()) < MIN_TEXT_LEN:
-            ocr_text = self._ocr_page(page)
-            # OCR 结果比原文字层更丰富时才替换，避免 OCR 反而更差
-            if ocr_text and len(ocr_text.strip()) > len(text.strip()):
-                logger.info(f"[PDF OCR] 页面文字层仅 {len(text.strip())} 字, 已用OCR补充为 {len(ocr_text.strip())} 字")
-                return ocr_text
-        return text
+    def _ocr_page(self, pdf, page_num: int) -> str:
+        """将指定页渲染为图片, 调用 Vision LLM 转录文字 (扫描版 PDF 兜底)
 
-    def _ocr_page(self, page) -> str:
-        """将整页渲染为图片, 调用 Vision LLM 转录文字 (扫描版 PDF 兜底)"""
+        接收 pdf 文档与页码, 在 worker 内重新取页渲染, 避免多线程序列化同一 page 句柄。
+        """
         try:
             from core.llm.factory import get_llm_client, is_vision_enabled
             if not is_vision_enabled():
                 return ""
             from core.prompts.vision import OCR_PROMPT
 
+            page = pdf[page_num]
             pil_image = page.render(scale=2.0).to_pil()
             buf = io.BytesIO()
             pil_image.save(buf, format="PNG")
@@ -112,7 +153,7 @@ class PDFParser:
             )
             return (result or "").strip()
         except Exception as e:
-            logger.warning(f"[PDF OCR] 页面识别失败, 回退原文字: {e}")
+            logger.warning(f"[PDF OCR] 页面 {page_num + 1} 识别失败, 回退原文字: {e}")
             return ""
 
     def _extract_images(
