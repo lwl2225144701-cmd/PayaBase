@@ -1698,6 +1698,84 @@ wheels = [
 ]
 
 [[package]]
+name = "payabase-api"
+version = "0.1.0"
+source = { editable = "." }
+dependencies = [
+    { name = "aiomysql" },
+    { name = "alembic" },
+    { name = "asyncpg" },
+    { name = "celery" },
+    { name = "fastapi" },
+    { name = "fpdf2" },
+    { name = "greenlet" },
+    { name = "httpx" },
+    { name = "langchain" },
+    { name = "langchain-community" },
+    { name = "langchain-text-splitters" },
+    { name = "markdown" },
+    { name = "minio" },
+    { name = "openai" },
+    { name = "pgvector" },
+    { name = "pillow" },
+    { name = "psycopg2-binary" },
+    { name = "pydantic" },
+    { name = "pydantic-settings" },
+    { name = "pymysql" },
+    { name = "pypdf" },
+    { name = "pypdfium2" },
+    { name = "python-docx" },
+    { name = "python-jose", extra = ["cryptography"] },
+    { name = "python-multipart" },
+    { name = "python-pptx" },
+    { name = "redis" },
+    { name = "sqlalchemy", extra = ["asyncio"] },
+    { name = "uvicorn", extra = ["standard"] },
+]
+
+[package.optional-dependencies]
+dev = [
+    { name = "pre-commit" },
+    { name = "ruff" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "aiomysql", specifier = ">=0.2.0" },
+    { name = "alembic", specifier = ">=1.14.0" },
+    { name = "asyncpg", specifier = ">=0.30.0" },
+    { name = "celery", specifier = ">=5.4.0" },
+    { name = "fastapi", specifier = ">=0.115.0" },
+    { name = "fpdf2", specifier = ">=2.8.0" },
+    { name = "greenlet", specifier = ">=3.0.0" },
+    { name = "httpx", specifier = ">=0.28.0" },
+    { name = "langchain", specifier = ">=0.3.0" },
+    { name = "langchain-community", specifier = ">=0.3.0" },
+    { name = "langchain-text-splitters", specifier = ">=0.3.0" },
+    { name = "markdown", specifier = ">=3.5.0" },
+    { name = "minio", specifier = ">=7.2.0" },
+    { name = "openai", specifier = ">=1.0.0" },
+    { name = "pgvector", specifier = ">=0.3.0" },
+    { name = "pillow", specifier = ">=10.0.0" },
+    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.1.0" },
+    { name = "psycopg2-binary", specifier = ">=2.9.0" },
+    { name = "pydantic", specifier = ">=2.10.0" },
+    { name = "pydantic-settings", specifier = ">=2.6.0" },
+    { name = "pymysql", specifier = ">=1.1.0" },
+    { name = "pypdf", specifier = ">=5.1.0" },
+    { name = "pypdfium2", specifier = ">=4.0.0" },
+    { name = "python-docx", specifier = ">=1.1.0" },
+    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0" },
+    { name = "python-multipart", specifier = ">=0.0.20" },
+    { name = "python-pptx", specifier = ">=1.0.0" },
+    { name = "redis", specifier = ">=5.2.0" },
+    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
+    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
+]
+provides-extras = ["dev"]
+
+[[package]]
 name = "pgvector"
 version = "0.4.2"
 source = { registry = "https://pypi.org/simple" }
@@ -2450,84 +2528,6 @@ sdist = { url = "https://files.pythonhosted.org/packages/09/a9/6ba95a270c6f1fbcd
 wheels = [
     { url = "https://files.pythonhosted.org/packages/16/e1/3079a9ff9b8e11b846c6ac5c8b5bfb7ff225eee721825310c91b3b50304f/tqdm-4.67.3-py3-none-any.whl", hash = "sha256:ee1e4c0e59148062281c49d80b25b67771a127c85fc9676d3be5f243206826bf", size = 78374, upload-time = "2026-02-03T17:35:50.982Z" },
 ]
-
-[[package]]
-name = "training-agent"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "aiomysql" },
-    { name = "alembic" },
-    { name = "asyncpg" },
-    { name = "celery" },
-    { name = "fastapi" },
-    { name = "fpdf2" },
-    { name = "greenlet" },
-    { name = "httpx" },
-    { name = "langchain" },
-    { name = "langchain-community" },
-    { name = "langchain-text-splitters" },
-    { name = "markdown" },
-    { name = "minio" },
-    { name = "openai" },
-    { name = "pgvector" },
-    { name = "pillow" },
-    { name = "psycopg2-binary" },
-    { name = "pydantic" },
-    { name = "pydantic-settings" },
-    { name = "pymysql" },
-    { name = "pypdf" },
-    { name = "pypdfium2" },
-    { name = "python-docx" },
-    { name = "python-jose", extra = ["cryptography"] },
-    { name = "python-multipart" },
-    { name = "python-pptx" },
-    { name = "redis" },
-    { name = "sqlalchemy", extra = ["asyncio"] },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
-[package.optional-dependencies]
-dev = [
-    { name = "pre-commit" },
-    { name = "ruff" },
-]
-
-[package.metadata]
-requires-dist = [
-    { name = "aiomysql", specifier = ">=0.2.0" },
-    { name = "alembic", specifier = ">=1.14.0" },
-    { name = "asyncpg", specifier = ">=0.30.0" },
-    { name = "celery", specifier = ">=5.4.0" },
-    { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "fpdf2", specifier = ">=2.8.0" },
-    { name = "greenlet", specifier = ">=3.0.0" },
-    { name = "httpx", specifier = ">=0.28.0" },
-    { name = "langchain", specifier = ">=0.3.0" },
-    { name = "langchain-community", specifier = ">=0.3.0" },
-    { name = "langchain-text-splitters", specifier = ">=0.3.0" },
-    { name = "markdown", specifier = ">=3.5.0" },
-    { name = "minio", specifier = ">=7.2.0" },
-    { name = "openai", specifier = ">=1.0.0" },
-    { name = "pgvector", specifier = ">=0.3.0" },
-    { name = "pillow", specifier = ">=10.0.0" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.1.0" },
-    { name = "psycopg2-binary", specifier = ">=2.9.0" },
-    { name = "pydantic", specifier = ">=2.10.0" },
-    { name = "pydantic-settings", specifier = ">=2.6.0" },
-    { name = "pymysql", specifier = ">=1.1.0" },
-    { name = "pypdf", specifier = ">=5.1.0" },
-    { name = "pypdfium2", specifier = ">=4.0.0" },
-    { name = "python-docx", specifier = ">=1.1.0" },
-    { name = "python-jose", extras = ["cryptography"], specifier = ">=3.3.0" },
-    { name = "python-multipart", specifier = ">=0.0.20" },
-    { name = "python-pptx", specifier = ">=1.0.0" },
-    { name = "redis", specifier = ">=5.2.0" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.8.0" },
-    { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.0.0" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.32.0" },
-]
-provides-extras = ["dev"]
 
 [[package]]
 name = "typing-extensions"
