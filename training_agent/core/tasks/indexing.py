@@ -834,7 +834,7 @@ def index_document_task(self, document_id: str):
             return summary, questions
 
         enriched: list = [None] * len(chunks_data)
-        with ThreadPoolExecutor(max_workers=5) as executor:
+        with ThreadPoolExecutor(max_workers=10) as executor:
             future_to_idx = {
                 executor.submit(_enrich_chunk, c): i
                 for i, c in enumerate(chunks_data)
