@@ -259,7 +259,7 @@ class Retriever:
         """
         from core.llm.factory import get_llm_client
 
-        llm = get_llm_client("chat")
+        llm = get_llm_client("chat", timeout=getattr(settings, "hyde_timeout", 30.0))
         messages = [
             {"role": "system", "content": HYDE_QUERY_SYSTEM_PROMPT},
             {"role": "user", "content": HYDE_QUERY_USER_PROMPT.format(query=query_text)},
