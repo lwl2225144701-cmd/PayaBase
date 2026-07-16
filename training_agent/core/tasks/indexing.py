@@ -711,7 +711,7 @@ def batch_insert_chunks(
         engine.dispose()
 
 
-@celery_app.task(bind=True, max_retries=MAX_RETRIES, time_limit=1800, soft_time_limit=1500)
+@celery_app.task(bind=True, max_retries=MAX_RETRIES, time_limit=3600, soft_time_limit=3000)
 def index_document_task(self, document_id: str):
     """Celery任务: 文档索引5阶段管道
     
