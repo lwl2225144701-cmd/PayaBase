@@ -31,6 +31,8 @@ from core.prompts.indexing import (
     HYDE_USER_PROMPT,
     COMBINED_SYSTEM_PROMPT,
     COMBINED_USER_PROMPT,
+    BATCH_SYSTEM_PROMPT,
+    BATCH_USER_PROMPT,
 )
 from models.tables import Chunk, Document
 
@@ -527,6 +529,76 @@ def generate_summary_and_questions(text: str, max_length: int = 100, num_questio
             return text[:max_length], []
 
 
+def generate_summaries_batch(texts: list[str], max_length: int = 100, num_questions: int = 3, batch_size: int = 5):
+    """批量合并调用：一次 LLM 处理 batch_size 个 chunk，返回 list[(summary, questions)]。
+
+    相比逐条/并发调用，API 请求数从 N 砍到 N/batch_size，是确定性提速，
+    不依赖并发与 RPM（mimo 服务端对单 key 并发会排队，提并发基本无效）。
+    单个 batch 失败时整体回退为逐条调用，保证不丢数据。
+    """
+    from core.llm.factory import get_llm_client
+
+    llm = get_llm_client("chat")
+    out: list = []
+    for start in range(0, len(texts), batch_size):
+        batch = texts[start:start + batch_size]
+        chunks_block = "\n".join(
+            f"<CHUNK_{i+1}>\n内容：\n{t[:2000]}" for i, t in enumerate(batch)
+        )
+        prompt = BATCH_USER_PROMPT.format(
+            num_chunks=len(batch),
+            max_length=max_length,
+            num_questions=num_questions,
+            chunks_block=chunks_block,
+        )
+        parsed = None
+        for attempt in range(2):
+            try:
+                resp = llm.chat([
+                    {"role": "system", "content": BATCH_SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt},
+                ])
+                parsed = _parse_batch_response(resp, len(batch), max_length, num_questions)
+                if parsed and len(parsed) == len(batch) and all(s for s, _ in parsed):
+                    break
+            except Exception as e:
+                err_str = str(e)
+                is_rpm = "429" in err_str or "rpm exhausted" in err_str
+                if is_rpm and attempt == 0:
+                    logger.warning(f"[Batch摘要] RPM限流,等待60s后重试")
+                    time.sleep(60)
+                    continue
+                logger.warning(f"[Batch摘要] 失败: {e}")
+                break
+        if not parsed or len(parsed) != len(batch):
+            # 回退：逐条处理本 batch
+            parsed = []
+            for t in batch:
+                try:
+                    parsed.append(generate_summary_and_questions(t, max_length, num_questions))
+                except Exception:
+                    parsed.append((t[:max_length], []))
+        out.extend(parsed)
+    return out
+
+
+def _parse_batch_response(resp: str, num_chunks: int, max_length: int, num_questions: int):
+    """按 <CHUNK_i> ... <END> 拆分批量响应，逐段用 _parse_combined_response 解析"""
+    import re
+    text = (resp or "").strip()
+    parts = re.split(r"<CHUNK_\d+>", text)
+    blocks = parts[1:num_chunks + 1]  # parts[0] 为前缀垃圾
+    out = []
+    for b in blocks:
+        b = re.sub(r"<END>\s*$", "", b).strip()
+        if not b:
+            out.append(("", []))
+            continue
+        summary, questions = _parse_combined_response(b, max_length, num_questions)
+        out.append((summary, questions))
+    return out
+
+
 def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[str]:
     """策略3: 假设性问题(HyDE) - 为每个chunk生成它能回答的问题
     
@@ -820,33 +892,14 @@ def index_document_task(self, document_id: str):
         
         update_document_status(document_id, "indexing", progress=80, chunk_count=len(chunks_data))
         
-        # ===== Stage6: 生成摘要和假设性问题（并发处理） =====
-        logger.info(f"[Stage5] 开始生成摘要和HyDE问题, 并发处理 {len(chunks_data)} 个chunk")
+        # ===== Stage6: 生成摘要和假设性问题（批量合并调用） =====
+        logger.info(f"[Stage5] 开始生成摘要和HyDE问题, 批量合并处理 {len(chunks_data)} 个chunk (BATCH_SIZE=5)")
 
-        def _enrich_chunk(chunk: dict):
-            """单个chunk的LLM增强: 长chunk走合并调用(摘要+HyDE一次出), 短chunk仅生成HyDE"""
-            content = chunk["content"]
-            if len(content) > 200:
-                summary, questions = generate_summary_and_questions(content)
-            else:
-                summary = content[:100]
-                questions = generate_hypothetical_questions(content)
-            return summary, questions
-
-        enriched: list = [None] * len(chunks_data)
-        with ThreadPoolExecutor(max_workers=10) as executor:
-            future_to_idx = {
-                executor.submit(_enrich_chunk, c): i
-                for i, c in enumerate(chunks_data)
-            }
-            for fut in as_completed(future_to_idx):
-                i = future_to_idx[fut]
-                try:
-                    summary, questions = fut.result()
-                except Exception as e:
-                    logger.warning(f"[Stage5] Chunk {i+1} 增强失败: {e}")
-                    summary, questions = chunks_data[i]["content"][:100], []
-                enriched[i] = (summary, questions)
+        # 批量合并调用：一次 LLM 处理 BATCH_SIZE 个 chunk，请求数确定性砍到 1/BATCH_SIZE
+        # （不依赖并发/RPM，mimo 服务端对单 key 并发会排队，提并发无效反而易触发 429）
+        BATCH_SIZE = 5
+        texts = [c["content"] for c in chunks_data]
+        enriched = generate_summaries_batch(texts, batch_size=BATCH_SIZE)
 
         for i, (summary, questions) in enumerate(enriched):
             chunks_data[i]["summary"] = summary
