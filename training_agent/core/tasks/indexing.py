@@ -14,7 +14,6 @@ import json
 import logging
 import uuid
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Optional
 
@@ -24,16 +23,6 @@ from langchain_core.documents import Document as LCDocument
 
 from core.config import settings
 from core.tasks import celery_app
-from core.prompts.indexing import (
-    SUMMARY_SYSTEM_PROMPT,
-    SUMMARY_USER_PROMPT,
-    HYDE_SYSTEM_PROMPT,
-    HYDE_USER_PROMPT,
-    COMBINED_SYSTEM_PROMPT,
-    COMBINED_USER_PROMPT,
-    BATCH_SYSTEM_PROMPT,
-    BATCH_USER_PROMPT,
-)
 from models.tables import Chunk, Document
 
 logging.basicConfig(level=logging.INFO)
@@ -470,159 +459,6 @@ def semantic_chunk_by_embedding(text: str, chunk_size: int = 500, similarity_thr
     return chunks
 
 
-def _clean_summary_prefix(text: str) -> str:
-    """去掉模型可能残留的'摘要：''本文'等前缀，统一向量化/展示格式"""
-    import re
-    cleaned = re.sub(r'^(摘要|本文|内容概述|概括?)[：:]\s*', '', text.strip())
-    return cleaned.strip()
-
-
-def _parse_combined_response(resp: str, max_length: int, num_questions: int):
-    """解析合并调用的返回，按【问题】分段拆出摘要与问题列表"""
-    import re
-    text = resp.strip()
-    parts = re.split(r'【问题】', text, maxsplit=1)
-    summary_part = parts[0]
-    questions_part = parts[1] if len(parts) > 1 else ""
-
-    summary = _clean_summary_prefix(summary_part).replace("【摘要】", "").strip()[:max_length]
-
-    questions = []
-    for line in questions_part.split('\n'):
-        q = re.sub(r'^[0-9]+[.、)]\s*', '', line.strip())
-        if q:
-            questions.append(q)
-    return summary, questions[:num_questions]
-
-
-def generate_summary_and_questions(text: str, max_length: int = 100, num_questions: int = 3):
-    """策略3合并调用: 一次LLM同时产出摘要与假设性问题(HyDE)
-
-    相比分别调用，长chunk的API请求数减半；保留429 RPM限流的60s重试兜底。
-    返回 (summary, questions)。
-    """
-    from core.llm.factory import get_llm_client
-
-    llm = get_llm_client("chat")
-    prompt = COMBINED_USER_PROMPT.format(
-        max_length=max_length, num_questions=num_questions, text=text[:2000]
-    )
-
-    for attempt in range(3):
-        try:
-            resp = llm.chat([
-                {"role": "system", "content": COMBINED_SYSTEM_PROMPT},
-                {"role": "user", "content": prompt},
-            ])
-            summary, questions = _parse_combined_response(resp, max_length, num_questions)
-            if not summary:
-                summary = text[:max_length]
-            return summary, questions
-        except Exception as e:
-            err_str = str(e)
-            is_rpm_limit = "429" in err_str or "rpm exhausted" in err_str or "RateLimitError" in str(type(e).__name__)
-            if is_rpm_limit and attempt < 2:
-                logger.warning(f"[摘要+HyDE] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
-                time.sleep(60)
-                continue
-            logger.warning(f"[摘要+HyDE] 生成失败: {e}")
-            return text[:max_length], []
-
-
-def generate_summaries_batch(texts: list[str], max_length: int = 100, num_questions: int = 3, batch_size: int = 5):
-    """批量合并调用：一次 LLM 处理 batch_size 个 chunk，返回 list[(summary, questions)]。
-
-    相比逐条/并发调用，API 请求数从 N 砍到 N/batch_size，是确定性提速，
-    不依赖并发与 RPM（mimo 服务端对单 key 并发会排队，提并发基本无效）。
-    单个 batch 失败时整体回退为逐条调用，保证不丢数据。
-    """
-    from core.llm.factory import get_llm_client
-
-    llm = get_llm_client("chat")
-    out: list = []
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start:start + batch_size]
-        chunks_block = "\n".join(
-            f"<CHUNK_{i+1}>\n内容：\n{t[:2000]}" for i, t in enumerate(batch)
-        )
-        prompt = BATCH_USER_PROMPT.format(
-            num_chunks=len(batch),
-            max_length=max_length,
-            num_questions=num_questions,
-            chunks_block=chunks_block,
-        )
-        parsed = None
-        for attempt in range(2):
-            try:
-                resp = llm.chat([
-                    {"role": "system", "content": BATCH_SYSTEM_PROMPT},
-                    {"role": "user", "content": prompt},
-                ])
-                parsed = _parse_batch_response(resp, len(batch), max_length, num_questions)
-                if parsed and len(parsed) == len(batch) and all(s for s, _ in parsed):
-                    break
-            except Exception as e:
-                err_str = str(e)
-                is_rpm = "429" in err_str or "rpm exhausted" in err_str
-                if is_rpm and attempt == 0:
-                    logger.warning(f"[Batch摘要] RPM限流,等待60s后重试")
-                    time.sleep(60)
-                    continue
-                logger.warning(f"[Batch摘要] 失败: {e}")
-                break
-        if not parsed or len(parsed) != len(batch):
-            # 回退：逐条处理本 batch
-            parsed = []
-            for t in batch:
-                try:
-                    parsed.append(generate_summary_and_questions(t, max_length, num_questions))
-                except Exception:
-                    parsed.append((t[:max_length], []))
-        out.extend(parsed)
-    return out
-
-
-def _parse_batch_response(resp: str, num_chunks: int, max_length: int, num_questions: int):
-    """按 <CHUNK_i> ... <END> 拆分批量响应，逐段用 _parse_combined_response 解析"""
-    import re
-    text = (resp or "").strip()
-    parts = re.split(r"<CHUNK_\d+>", text)
-    blocks = parts[1:num_chunks + 1]  # parts[0] 为前缀垃圾
-    out = []
-    for b in blocks:
-        b = re.sub(r"<END>\s*$", "", b).strip()
-        if not b:
-            out.append(("", []))
-            continue
-        summary, questions = _parse_combined_response(b, max_length, num_questions)
-        out.append((summary, questions))
-    return out
-
-
-def generate_hypothetical_questions(text: str, num_questions: int = 3) -> list[str]:
-    """策略3: 假设性问题(HyDE) - 为每个chunk生成它能回答的问题
-    
-    检索时匹配"用户问题"与"预设问题"，提高匹配准确度
-    """
-    from core.llm.factory import get_llm_client
-
-    llm = get_llm_client("chat")
-    prompt = HYDE_USER_PROMPT.format(num_questions=num_questions, text=text[:1500])
-
-    for attempt in range(3):
-        try:
-            response = llm.chat([{"role": "system", "content": HYDE_SYSTEM_PROMPT}, {"role": "user", "content": prompt}])
-            questions = [q.strip() for q in response.strip().split('\n') if q.strip()]
-            return questions[:num_questions]
-        except Exception as e:
-            err_str = str(e)
-            is_rpm_limit = "429" in err_str or "rpm exhausted" in err_str or "RateLimitError" in str(type(e).__name__)
-            if is_rpm_limit and attempt < 2:
-                logger.warning(f"[HyDE] RPM限流,等待60s后重试 (attempt {attempt+1}/3)")
-                time.sleep(60)
-                continue
-            logger.warning(f"[HyDE] 生成失败: {e}")
-            return []
 
 
 def cosine_similarity(a: list[float], b: list[float]) -> float:
@@ -704,23 +540,20 @@ def build_chunks_data(documents: list[LCDocument], file_ext: str) -> list[dict]:
 
 
 def build_embedding_text(chunk: dict) -> str:
-    """Use concise, high-signal text for embedding."""
-    summary = _clean_summary_prefix(chunk.get("summary") or "").strip()
+    """Use the raw chunk content for embedding (索引期不再生成摘要)。
+
+    直接对原文做向量化,索引期零 LLM 调用;HyDE 召回增强改在查询时完成。
+    """
     content = (chunk.get("content") or "").strip()
     chunk_type = chunk.get("chunk_type", "")
 
-    if summary and len(summary) >= 30:
-        text_value = summary
-    else:
-        text_value = content[:800]
-
     if chunk_type == "image_vision":
-        return f"图片内容检索文本：{text_value}"
+        return f"图片内容检索文本：{content}"
     if chunk_type == "md_structured":
-        return f"Markdown文档片段：{text_value}"
+        return f"Markdown文档片段：{content}"
     if chunk_type == "word_structured":
-        return f"Word文档片段：{text_value}"
-    return text_value
+        return f"Word文档片段：{content}"
+    return content
 
 
 def batch_insert_chunks(
@@ -892,24 +725,17 @@ def index_document_task(self, document_id: str):
         
         update_document_status(document_id, "indexing", progress=80, chunk_count=len(chunks_data))
         
-        # ===== Stage6: 生成摘要和假设性问题（批量合并调用） =====
-        logger.info(f"[Stage5] 开始生成摘要和HyDE问题, 批量合并处理 {len(chunks_data)} 个chunk (BATCH_SIZE=5)")
+        # ===== 向量化（索引期不再逐 chunk 调 LLM） =====
+        # 重构说明: 摘要与 HyDE 不再在索引期生成。
+        # - 摘要仅用于展示,可后续异步/廉价生成,不阻塞索引;
+        # - HyDE 改为「查询时」对用户 query 生成假设文档再检索(见 Retriever.search)。
+        # 因此对原文直接 embedding,索引期零 LLM 调用(125 chunk 由 3~5 分钟降到秒级)。
+        for c in chunks_data:
+            c.setdefault("summary", "")
+            c.setdefault("hypothetical_questions", [])
+            c.setdefault("chunk_type", "recursive")
 
-        # 批量合并调用：一次 LLM 处理 BATCH_SIZE 个 chunk，请求数确定性砍到 1/BATCH_SIZE
-        # （不依赖并发/RPM，mimo 服务端对单 key 并发会排队，提并发无效反而易触发 429）
-        BATCH_SIZE = 5
-        texts = [c["content"] for c in chunks_data]
-        enriched = generate_summaries_batch(texts, batch_size=BATCH_SIZE)
-
-        for i, (summary, questions) in enumerate(enriched):
-            chunks_data[i]["summary"] = summary
-            chunks_data[i]["hypothetical_questions"] = questions
-            chunks_data[i].setdefault("chunk_type", "recursive")
-
-        logger.info(f"[Stage5] 摘要和HyDE生成完成")
-        
-        # ===== Stage7: 向量化 =====
-        logger.info(f"[Stage6] 开始向量化, 向量化目标: summary字段, chunks数量: {len(chunks_data)}")
+        logger.info(f"[Index] 开始向量化, 向量化目标: 原文内容, chunks数量: {len(chunks_data)}")
         
         texts_to_embed = [build_embedding_text(c) for c in chunks_data]
         

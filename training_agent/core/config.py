@@ -94,6 +94,13 @@ class Settings(BaseSettings):
     index_chunk_overlap: int = 100
     index_enable_image_vision: bool = True
 
+    # HyDE (查询时假设性文档嵌入)
+    # 索引期不再逐 chunk 调 LLM;改为查询时对用户 query 生成假设文档再检索,
+    # 把 LLM 成本从「每 chunk」降到「每查询」。
+    hyde_enabled: bool = True
+    hyde_alpha: float = 0.5  # query 向量与 hyde 向量的混合权重 (1=纯query, 0=纯hyde)
+    hyde_timeout: float = 30.0
+
     # Agent
     max_iterations: int = 5
     memory_limit: int = 10

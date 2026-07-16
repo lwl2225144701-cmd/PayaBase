@@ -10,10 +10,8 @@ from core.prompts.chat import (
     FALLBACK_PROMPT,
 )
 from core.prompts.indexing import (
-    SUMMARY_SYSTEM_PROMPT,
-    SUMMARY_USER_PROMPT,
-    HYDE_SYSTEM_PROMPT,
-    HYDE_USER_PROMPT,
+    HYDE_QUERY_SYSTEM_PROMPT,
+    HYDE_QUERY_USER_PROMPT,
 )
 from core.prompts.vision import VISION_PROMPT
 from core.prompts.agent import (
@@ -33,11 +31,9 @@ __all__ = [
     "build_attachment_with_kb_prompt",
     "build_kb_only_prompt",
     "FALLBACK_PROMPT",
-    # Indexing
-    "SUMMARY_SYSTEM_PROMPT",
-    "SUMMARY_USER_PROMPT",
-    "HYDE_SYSTEM_PROMPT",
-    "HYDE_USER_PROMPT",
+    # Retrieval (查询时 HyDE)
+    "HYDE_QUERY_SYSTEM_PROMPT",
+    "HYDE_QUERY_USER_PROMPT",
     # Vision
     "VISION_PROMPT",
     # Agent

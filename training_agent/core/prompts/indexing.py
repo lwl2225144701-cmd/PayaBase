@@ -1,56 +1,30 @@
-"""Indexing Prompts.
+"""Retrieval / Indexing Prompts.
 
-Prompts used during document indexing pipeline (summary, HyDE).
+历史说明:
+  在 2026-07-16 的重构之前,摘要(Summary)与假设性问题(HyDE)是在「索引期」
+  对每个 chunk 调一次 LLM 生成的。这导致文档入库被 LLM 调用严重拖慢
+  (125 个 chunk 需 3~5 分钟)。
+
+  重构后:
+  - 索引期: 只切块 + 对原文 embedding + 入库,零 LLM 调用(秒级完成)。
+  - HyDE 改为「查询时」技术: 对用户 query 生成一篇假设性回答文档,嵌入后与
+    query 向量混合用于检索。这是 HyDE 的原始定义,且把 LLM 成本从
+    「每 chunk」降到「每查询」(每次检索仅 1 次 LLM 调用)。
+
+因此本文件只保留查询时 HyDE 所需的 prompt。
 """
 
-SUMMARY_SYSTEM_PROMPT = "你是文本摘要专家"
+# ===== 查询时 HyDE (Hypothetical Document Embeddings) =====
+# 给定用户问题,让模型写出一段「可能出现在知识库中的回答性文本」,
+# 用于提升向量检索召回率。只输出文本本身,不要解释或前缀。
 
-SUMMARY_USER_PROMPT = """请用{max_length}字以内的简短的摘要概括以下内容的主题和核心要点：
+HYDE_QUERY_SYSTEM_PROMPT = (
+    "你是一个检索增强助手。给定用户的问题,请撰写一段详细、具体、"
+    "可能出现在知识库文档中的回答性文本(假设性文档),用于提升向量检索的召回率。"
+    "只输出这段文本本身,不要解释、不要加任何前缀或编号。"
+)
 
-{text}
-
-摘要："""
-
-HYDE_SYSTEM_PROMPT = "You are a question generator"
-
-HYDE_USER_PROMPT = """Based on the following content, generate {num_questions} hypothetical questions that this content could answer.
-Output ONLY the questions, one per line, no numbering.
-
-Content:
-{text}
-
-Questions:"""
-
-# 合并调用：一次 LLM 同时产出【摘要】与【问题】，减少一半 API 请求
-COMBINED_SYSTEM_PROMPT = "你是文本处理助手，擅长用中文提炼要点并生成检索增强用的假设性问题。"
-
-COMBINED_USER_PROMPT = """请处理以下内容，严格按以下格式输出（不要添加任何额外说明）：
-
-【摘要】
-用 {max_length} 字以内的中文概括内容的主题和核心要点。直接输出摘要正文，不要带“摘要：”“本文”等前缀。
-
-【问题】
-生成 {num_questions} 个该内容能回答的用户问题（用于检索增强，中英文皆可），每行一个，不要编号。
-
-内容：
-{text}
-
-【摘要】
-"""
-
-# 批量调用：一次 LLM 处理多个 chunk，大幅减少 API 请求数（确定性提速，不依赖并发/RPM）
-BATCH_SYSTEM_PROMPT = "你是文本处理助手，擅长用中文提炼要点并批量生成检索增强用的假设性问题。"
-
-BATCH_USER_PROMPT = """请依次处理以下 {num_chunks} 个文本片段，对每个片段严格按格式输出，片段之间用 <CHUNK_序号> 与 <END> 标记分隔。
-
-对每个片段的输出格式（严格照做，不要添加额外说明）：
-<CHUNK_{idx}>
-【摘要】
-用 {max_length} 字以内的中文概括该片段的主题和核心要点。直接输出摘要正文，不要带“摘要：”“本文”等前缀。
-
-【问题】
-生成 {num_questions} 个该片段能回答的用户问题（用于检索增强，中英文皆可），每行一个，不要编号。
-<END>
-
-需要处理的片段如下：
-{chunks_block}"""
+HYDE_QUERY_USER_PROMPT = (
+    "用户问题:\n{query}\n\n"
+    "请写出一段能够回答该问题的文档内容(2-4 句,包含具体术语与细节):"
+)

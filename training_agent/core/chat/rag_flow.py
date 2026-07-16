@@ -19,7 +19,6 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.rag.retriever import Retriever
-from core.embedding.client import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -73,23 +72,18 @@ async def retrieve_chat_context(
 
     try:
         t0 = time.time()
-        logger.info(f"[Timing] 开始向量化, query={request.query[:30]}...")
-        embedding = EmbeddingClient()
-        query_vector = await embedding.embed_single(request.query)
-        timings["embedding_ms"] = int((time.time() - t0) * 1000)
-        logger.info(f"[Timing] 向量化完成: {timings['embedding_ms']}ms, dim={len(query_vector)}")
-
-        t0 = time.time()
+        logger.info(f"[Timing] 开始检索, query={request.query[:30]}...")
         retriever = Retriever(db)
-        retrieved, retrieval_timings = await retriever.similarity_search(
-            query_vector, str(request.active_kb_id),
+        retrieved, retrieval_timings = await retriever.search(
+            request.query, str(request.active_kb_id),
             top_k=5, threshold=0.2,
             query_text=request.query,
             use_rerank=True,
             return_timings=True,
         )
-        retrieval_ms = int((time.time() - t0) * 1000)
-        timings["retrieval_ms"] = retrieval_ms
+        timings["retrieval_ms"] = int((time.time() - t0) * 1000)
+        timings["embedding_ms"] = retrieval_timings.get("embedding_ms", 0)
+        timings["hyde_ms"] = retrieval_timings.get("hyde_ms", 0)
         timings["retrieval_vector_sql_ms"] = retrieval_timings.get("vector_sql_ms", 0)
         timings["retrieval_bm25_ms"] = retrieval_timings.get("bm25_ms", 0)
         timings["retrieval_rrf_ms"] = retrieval_timings.get("rrf_ms", 0)

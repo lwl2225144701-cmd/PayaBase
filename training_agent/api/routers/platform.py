@@ -11,7 +11,6 @@ from api.schemas.platform import PlatformCallbackResponse
 from core.adapters.base import PlatformMessage
 from core.adapters.registry import get_adapter
 from core.config import settings
-from core.embedding.client import EmbeddingClient
 from core.llm.factory import get_llm_client
 from core.prompts.chat import build_kb_only_prompt
 from core.prompts.platform import get_platform_prompt
@@ -130,9 +129,8 @@ async def _build_assistant_answer(
     context_prompt = ""
     if conv.knowledge_base_id:
         try:
-            qv = await EmbeddingClient().embed_single(incoming.content)
-            chunks = await Retriever(db).similarity_search(
-                qv,
+            chunks = await Retriever(db).search(
+                incoming.content,
                 str(conv.knowledge_base_id),
                 top_k=5,
                 threshold=0.2,

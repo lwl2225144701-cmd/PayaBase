@@ -18,6 +18,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from core.config import settings
 from models.tables import Chunk, Document
 from core.exceptions import NotFoundException
+from core.prompts import HYDE_QUERY_SYSTEM_PROMPT, HYDE_QUERY_USER_PROMPT
+from core.embedding.client import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -187,6 +189,88 @@ class Retriever:
         
         return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
+    async def search(
+        self,
+        query_text: str,
+        kb_id: str,
+        top_k: int = 5,
+        threshold: float = 0.2,
+        filters: Optional[dict] = None,
+        use_hyde: bool = True,
+        use_rerank: bool = True,
+        return_timings: bool = False,
+    ) -> list[RetrievedChunk] | tuple[list[RetrievedChunk], dict[str, object]]:
+        """高层检索入口: 向量化 query + (可选)查询时 HyDE + 混合检索。
+
+        相比索引期逐 chunk 生成 HyDE,这里只在「每次查询」用一次 LLM 生成假设文档,
+        与 query 向量混合后检索。索引期因此可零 LLM 调用(纯切块 + 原文 embedding)。
+
+        Returns:
+            RetrievedChunk 列表; return_timings=True 时返回 (列表, timings)。
+            timings 额外包含 embedding_ms / hyde_ms。
+        """
+        import time
+
+        timings: dict[str, object] = {}
+        t0 = time.time()
+        query_vector = await EmbeddingClient().embed_single(query_text)
+        timings["embedding_ms"] = int((time.time() - t0) * 1000)
+        if not query_vector:
+            logger.warning("[RAG] query 向量化失败,返回空结果")
+            return ([], timings) if return_timings else []
+
+        if use_hyde and settings.hyde_enabled:
+            try:
+                t_h = time.time()
+                hyde_doc = await self._generate_hyde(query_text)
+                if hyde_doc:
+                    hyde_vec = await EmbeddingClient().embed_single(hyde_doc)
+                    if hyde_vec and len(hyde_vec) == len(query_vector):
+                        alpha = float(getattr(settings, "hyde_alpha", 0.5))
+                        query_vector = [
+                            q * alpha + h * (1 - alpha)
+                            for q, h in zip(query_vector, hyde_vec)
+                        ]
+                timings["hyde_ms"] = int((time.time() - t_h) * 1000)
+            except Exception as e:
+                logger.warning(f"[RAG] HyDE 生成失败,降级为原始 query 向量: {e}")
+                timings["hyde_ms"] = 0
+
+        result = await self.similarity_search(
+            query_vector,
+            kb_id,
+            top_k=top_k,
+            threshold=threshold,
+            filters=filters,
+            query_text=query_text,
+            use_rerank=use_rerank,
+            return_timings=return_timings,
+        )
+        if return_timings and isinstance(result, tuple):
+            retrieved, sub = result
+            sub.update(timings)
+            return retrieved, sub
+        return result
+
+    async def _generate_hyde(self, query_text: str) -> str | None:
+        """查询时 HyDE: 根据用户问题生成一篇假设性回答文档。
+
+        仅用于检索增强,不进入最终回答;失败返回 None 由调用方降级。
+        """
+        from core.llm.factory import get_llm_client
+
+        llm = get_llm_client("chat")
+        messages = [
+            {"role": "system", "content": HYDE_QUERY_SYSTEM_PROMPT},
+            {"role": "user", "content": HYDE_QUERY_USER_PROMPT.format(query=query_text)},
+        ]
+        try:
+            resp = await asyncio.to_thread(llm.chat, messages)
+            return (resp or "").strip() or None
+        except Exception as e:
+            logger.warning(f"[RAG] HyDE LLM 调用失败: {e}")
+            return None
+
     async def similarity_search(
         self,
         query_vector: list[float],
@@ -268,16 +352,8 @@ class Retriever:
         # 2. 构建BM25 corpus
         corpus = []
         for row in rows:
-            # 优先用summary，其次content，添加HyDE问题
-            content = row.get("summary", "") or row.get("content", "")[:300]
-            hyde = row.get("hypothetical_questions", "")
-            if hyde:
-                try:
-                    hyde_list = json.loads(hyde) if isinstance(hyde, str) else hyde
-                    if hyde_list:
-                        content += " " + " ".join(hyde_list[:3])
-                except:
-                    pass
+            # 索引期不再生成 summary/HyDE，BM25 直接基于原文内容做词法匹配
+            content = (row.get("summary") or row.get("content") or "")[:800]
             corpus.append(content)
         
         # 3. BM25搜索

@@ -59,21 +59,15 @@ class KnowledgeRetrievalTool(BaseTool):
         return await self._async_invoke(query, top_k)
 
     async def _async_invoke(self, query: str, top_k: int) -> str:
-        from core.embedding.client import EmbeddingClient
         from core.rag.retriever import Retriever
         from models.db import async_session
 
         try:
-            embedding_client = EmbeddingClient()
-            query_vector = await embedding_client.embed_single(query)
-            if not query_vector:
-                return "无法生成查询向量，请检查向量服务是否可用。"
-
             async with async_session() as session:
                 retriever = Retriever(session)
-                chunks = await retriever.similarity_search(
-                    query_vector=query_vector,
-                    kb_id=self._kb_id,
+                chunks = await retriever.search(
+                    query,
+                    self._kb_id,
                     top_k=top_k,
                     threshold=0.2,
                     query_text=query,
