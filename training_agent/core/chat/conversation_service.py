@@ -1,15 +1,14 @@
 """Conversation and message CRUD operations."""
 
-import uuid
 import logging
-from typing import Optional
+import uuid
 
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 
-from api.schemas.chat import (
+from core.chat.conversation_dto import (
     ConversationCreate,
-    ConversationResponse,
     ConversationListResponse,
+    ConversationResponse,
     MessageResponse,
 )
 from core.exceptions import NotFoundException
