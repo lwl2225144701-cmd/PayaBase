@@ -571,6 +571,12 @@ def batch_insert_chunks(
     
     try:
         with engine.begin() as conn:
+            # 0. 先删除该文档的旧 chunk（重索引时必须清理，否则新旧向量并存导致检索混乱）
+            conn.execute(
+                text("DELETE FROM chunks WHERE document_id=:doc_id"),
+                {"doc_id": document_id},
+            )
+
             # 1. 批量插入 chunks
             for chunk_data, vector in zip(chunks_data, vectors):
                 chunk_id = chunk_data.get("chunk_id") or str(uuid.uuid4())
