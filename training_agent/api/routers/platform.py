@@ -134,7 +134,6 @@ async def _build_assistant_answer(
                 str(conv.knowledge_base_id),
                 top_k=5,
                 threshold=0.2,
-                query_text=incoming.content,
                 use_rerank=True,
             )
             if chunks:

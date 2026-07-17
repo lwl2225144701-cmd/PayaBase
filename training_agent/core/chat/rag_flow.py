@@ -77,7 +77,6 @@ async def retrieve_chat_context(
         retrieved, retrieval_timings = await retriever.search(
             request.query, str(request.active_kb_id),
             top_k=5, threshold=0.2,
-            query_text=request.query,
             use_rerank=True,
             return_timings=True,
         )
@@ -95,7 +94,7 @@ async def retrieve_chat_context(
         timings["retrieval_rerank_cache_hit"] = retrieval_timings.get("rerank_cache_hit", False)
         timings["retrieval_rerank_error"] = retrieval_timings.get("rerank_error", "")
         logger.info(
-            f"[Timing] 混合检索完成: {retrieval_ms}ms, 返回{len(retrieved)}条, "
+            f"[Timing] 混合检索完成: {timings['retrieval_ms']}ms, 返回{len(retrieved)}条, "
             f"detail={retrieval_timings}"
         )
 

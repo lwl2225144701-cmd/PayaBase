@@ -70,7 +70,6 @@ class KnowledgeRetrievalTool(BaseTool):
                     self._kb_id,
                     top_k=top_k,
                     threshold=0.2,
-                    query_text=query,
                     use_rerank=True,
                 )
 
