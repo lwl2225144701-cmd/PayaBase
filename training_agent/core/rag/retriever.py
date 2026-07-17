@@ -11,7 +11,7 @@ from collections import Counter
 from typing import Optional
 from dataclasses import dataclass
 
-import redis
+from core.infrastructure.redis.client import get_redis_client
 from sqlalchemy import select, func, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,12 +23,7 @@ from core.embedding.client import EmbeddingClient
 
 logger = logging.getLogger(__name__)
 
-_rerank_cache = redis.Redis(
-    host=settings.redis_host,
-    port=settings.redis_port,
-    db=3,
-    decode_responses=True,
-)
+_rerank_cache = get_redis_client(db=3)
 
 
 @dataclass

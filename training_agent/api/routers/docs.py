@@ -14,20 +14,11 @@ from core.config import settings
 from core.exceptions import NotFoundException, ValidationException
 from core.permissions import require_manage_kb, require_visible_kb
 from models.tables import Document, Chunk
-from minio import Minio
+from core.infrastructure.minio.client import get_minio_client
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def get_minio_client() -> Minio:
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
 
 
 def _upload_bytes_to_minio(file_path: str, file_content: bytes) -> None:

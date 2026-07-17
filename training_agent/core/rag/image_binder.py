@@ -6,7 +6,7 @@ from typing import Optional
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
-from minio import Minio
+from core.infrastructure.minio.client import get_minio_client
 
 from core.config import settings
 
@@ -18,12 +18,7 @@ class ImageBinder:
 
     def __init__(self):
         self.engine = create_engine(settings.sync_database_url)
-        self.minio_client = Minio(
-            settings.minio_endpoint,
-            access_key=settings.minio_access_key,
-            secret_key=settings.minio_secret_key,
-            secure=False,
-        )
+        self.minio_client = get_minio_client()
 
     def bind_images_to_chunks(
         self,

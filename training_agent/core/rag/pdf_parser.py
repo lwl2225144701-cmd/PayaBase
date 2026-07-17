@@ -9,6 +9,7 @@ import pypdfium2
 from PIL import Image
 from langchain_core.documents import Document
 from minio import Minio
+from core.infrastructure.minio.client import get_minio_client
 
 from core.config import settings
 
@@ -228,12 +229,7 @@ class PDFParser:
     def _upload_to_minio(self, key: str, data: bytes, content_type: str):
         """上传到MinIO"""
         if not self.minio_client:
-            self.minio_client = Minio(
-                settings.minio_endpoint,
-                access_key=settings.minio_access_key,
-                secret_key=settings.minio_secret_key,
-                secure=False,
-            )
+            self.minio_client = get_minio_client()
 
         self.minio_client.put_object(
             settings.minio_bucket,

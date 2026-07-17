@@ -65,14 +65,9 @@ def update_document_status(
 
 def download_from_minio(file_path: str) -> bytes:
     """Stage1: 从MinIO下载文件"""
-    from minio import Minio
+    from core.infrastructure.minio.client import get_minio_client
     
-    minio_client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+    minio_client = get_minio_client()
     
     response = minio_client.get_object(settings.minio_bucket, file_path)
     return response.read()

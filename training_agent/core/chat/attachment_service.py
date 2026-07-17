@@ -5,7 +5,7 @@ import io
 import logging
 from pathlib import Path
 
-from minio import Minio
+from core.infrastructure.minio.client import get_minio_client as _get_minio_client
 
 from core.config import settings
 from core.exceptions import ValidationException
@@ -14,16 +14,6 @@ from core.rag.instant_parser import InstantFileParser
 logger = logging.getLogger(__name__)
 
 ALLOWED_ATTACHMENT_TYPES = {"pdf", "docx", "doc", "txt", "md", "png", "jpg", "jpeg", "gif", "webp", "bmp"}
-
-
-def _get_minio_client() -> Minio:
-    """Create MinIO client from settings."""
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
 
 
 def _put_attachment_object(

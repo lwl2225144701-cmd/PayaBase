@@ -11,7 +11,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Optional
 
-import redis
+from core.infrastructure.redis.client import get_redis_client
 
 from core.llm.client import LLMClient
 from core.config import settings
@@ -25,12 +25,7 @@ _executor = ThreadPoolExecutor(max_workers=2)
 CACHE_TTL = 600  # 10 minutes
 
 # Redis client (sync, used inside thread executor)
-_redis = redis.Redis(
-    host=settings.redis_host,
-    port=settings.redis_port,
-    db=2,  # use db=2 for intent cache (0=celery, 1=celery result)
-    decode_responses=True,
-)
+_redis = get_redis_client(db=2)
 
 CACHE_PREFIX = "intent:"
 

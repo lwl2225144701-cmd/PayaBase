@@ -80,15 +80,10 @@ async def download_ppt(
     if task.status != "ready" or not task.file_path:
         raise HTTPException(status_code=400, detail="PPT not ready yet")
 
-    from minio import Minio
+    from core.infrastructure.minio.client import get_minio_client
     from core.config import settings
 
-    minio_client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+    minio_client = get_minio_client()
 
     bucket = settings.ppt_minio_bucket
     # Random temp filename to avoid concurrent download collisions

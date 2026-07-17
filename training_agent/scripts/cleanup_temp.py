@@ -22,14 +22,9 @@ def cleanup_temp_attachments(max_age_hours: int = 24) -> int:
     Returns:
         Number of objects deleted
     """
-    from minio import Minio
+    from core.infrastructure.minio.client import get_minio_client
 
-    client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+    client = get_minio_client()
 
     if not client.bucket_exists(settings.minio_bucket):
         print(f"Bucket '{settings.minio_bucket}' does not exist.")

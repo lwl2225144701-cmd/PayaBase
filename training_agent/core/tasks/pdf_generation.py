@@ -75,14 +75,9 @@ def _register_cjk_font(pdf) -> bool:
 
 def upload_to_minio(local_path: str, task_id: str) -> str:
     """Upload file to MinIO and return the object key."""
-    from minio import Minio
+    from core.infrastructure.minio.client import get_minio_client
 
-    minio_client = Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
+    minio_client = get_minio_client()
 
     bucket = settings.pdf_minio_bucket
     if not minio_client.bucket_exists(bucket):
