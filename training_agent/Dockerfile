@@ -33,8 +33,6 @@ FROM runtime-base AS api-runtime
 COPY api /app/api
 COPY core /app/core
 COPY models /app/models
-COPY services /app/services
-COPY workers /app/workers
 
 CMD ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
