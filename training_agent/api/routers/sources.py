@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import json
 import logging
 import uuid
@@ -9,10 +8,9 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
-from sqlalchemy import select
 
-from api.deps import DBSession, CurrentUser
-from api.routers.docs import _document_response, _persist_document
+from api.deps import CurrentUser, DBSession
+from api.routers.docs import _document_response
 from api.schemas.common import Response
 from api.schemas.doc import DocumentResponse
 from api.schemas.sources import (
@@ -24,12 +22,12 @@ from api.schemas.sources import (
     GoogleDrivePreviewResponse,
     SourceUploadToKBRequest,
 )
+from core.application.documents import ImportDocumentUseCase
 from core.config import settings
 from core.exceptions import ValidationException
 from core.permissions import require_manage_kb
 from core.sources.google_drive import GoogleDriveSource
 from core.sources.registry import get_source
-from models.tables import Document
 
 logger = logging.getLogger(__name__)
 
@@ -256,38 +254,18 @@ async def upload_to_kb(
     else:
         raise ValidationException(f"不支持的 source_type: {body.source_type}")
 
-    file_hash = hashlib.md5(result.content).hexdigest()
-    existing_doc = await db.execute(
-        select(Document).where(
-            Document.knowledge_base_id == kb.id,
-            Document.file_hash == file_hash,
-        )
-    )
-    existing = existing_doc.scalar_one_or_none()
-    if existing:
-        if existing.status == "ready":
-            return Response(
-                data=_document_response(existing, status_override="already_indexed"),
-                msg="文档已存在且已索引完成",
-            )
-        if existing.status in ("pending", "indexing"):
-            return Response(
-                data=_document_response(existing),
-                msg="文档已在索引中",
-            )
-
-    doc = await _persist_document(
-        db,
-        str(kb.id),
-        title=body.title or result.filename,
-        storage_filename=result.filename,
-        file_content=result.content,
+    use_case = ImportDocumentUseCase(db)
+    import_result = await use_case.persist_fetched_document(
+        kb_id=str(kb.id),
+        current_user=current_user,
+        content=result.content,
+        filename=body.title or result.filename,
         file_type=result.file_type,
         source_type=result.source_type,
         source_url=result.source_url,
     )
 
     return Response(
-        data=_document_response(doc),
-        msg=f"文档已从 {body.source_type} 导入，正在索引",
+        data=_document_response(import_result.document, import_result.status_override),
+        msg=import_result.message,
     )
