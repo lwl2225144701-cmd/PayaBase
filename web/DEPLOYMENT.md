@@ -19,7 +19,7 @@
 
 最少配置：
 
-- `NEXT_PUBLIC_API_BASE_URL=https://your-api.example.com`
+- `NEXT_PUBLIC_API_URL=https://your-api.example.com`
 
 按环境拆分：
 
@@ -111,7 +111,7 @@ pm2 restart payabase-web
 
 ## 9. 发布检查清单（建议）
 
-- `NEXT_PUBLIC_API_BASE_URL` 指向正确环境
+- `NEXT_PUBLIC_API_URL` 指向正确环境
 - 与后端版本接口一致
 - 浏览器缓存策略正确（静态资源 hash）
 - 新增页面和弹窗在移动端/桌面端可用

@@ -26,7 +26,7 @@ Next.js 页面层
 API 封装层（src/lib/api.ts）
   |
   v
-后端 API（training_agent:8123）
+后端 API（本地 http://127.0.0.1:8123，由 NEXT_PUBLIC_API_URL 配置）
 ```
 
 ## 业务逻辑是什么
@@ -47,7 +47,7 @@ npm install
 
 # 3) 配置后端地址
 cat > .env.local << 'EOF'
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8123
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8123
 EOF
 
 # 4) 启动开发服务
@@ -98,7 +98,7 @@ cp .env.local .env.local.bak 2>/dev/null || true
 确保 `.env.local` 至少有：
 
 ```bash
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8123
+NEXT_PUBLIC_API_URL=http://127.0.0.1:8123
 ```
 
 4. 启动开发服务
@@ -130,7 +130,7 @@ PORT=8080 npm run dev
 ## 常见问题排查（新同学高频）
 
 1. 页面能打开但接口全失败
-- 基本是 `NEXT_PUBLIC_API_BASE_URL` 配错
+- 基本是 `NEXT_PUBLIC_API_URL` 配错
 - 检查后端是否已启动：`curl http://127.0.0.1:8123/health`
 
 2. 浏览器报 CORS
@@ -149,3 +149,13 @@ PORT=8080 npm run dev
 - 将 API 错误提示统一收敛到消息组件，减少 `alert` 的使用。
 - 为来源导入流程增加可视化状态机（授权中、上传中、索引中、完成/失败）。
 - 增加 E2E 用例覆盖：会话创建、附件上传、飞书/Drive 导入链路。
+
+## 命名约定（避免混淆）
+
+本仓库存在几种容易混淆的命名，实际含义如下：
+
+- `training_agent`（下划线）：项目目录名、Postgres 数据库名（`POSTGRES_DB`）、Celery 应用名、对象存储中文档路径。这些是**运行时实体**，请勿随意改名，否则需要连带迁移数据库与所有路径。
+- `payabase-api`：后端 Python 包名（见 `training_agent/pyproject.toml` 的 `[project] name`）。
+- `payabase-web`：前端 npm 包名（见 `web/package.json` 的 `name`）。`web/package-lock.json` 中残留的 `training-agent-web` 是历史快照，执行一次 `npm install` 即会自动同步为 `payabase-web`，无需手动修改锁文件（手动改反而可能让 `npm ci` 报错）。
+
+后端 API 地址通过 `NEXT_PUBLIC_API_URL` 配置（注意不是 `NEXT_PUBLIC_API_BASE_URL`）。本地开发时后端由 `uvicorn` 在 `127.0.0.1:8123` 启动，不在 docker-compose 网络内，因此**不可用 docker 服务名（如 `training_agent:8123`）访问后端**。
