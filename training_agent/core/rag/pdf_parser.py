@@ -74,7 +74,7 @@ class PDFParser:
             )
             with ThreadPoolExecutor(max_workers=OCR_CONCURRENCY) as executor:
                 future_to_page = {
-                    executor.submit(self._ocr_page, pdf, pn): pn
+                    executor.submit(self._ocr_page, file_data, pn): pn
                     for pn in ocr_needed
                 }
                 for future in future_to_page:
@@ -131,10 +131,12 @@ class PDFParser:
             logger.warning(f"[PDF] 文字层提取失败: {e}")
             return ""
 
-    def _ocr_page(self, pdf, page_num: int) -> str:
+    def _ocr_page(self, file_data, page_num: int) -> str:
         """将指定页渲染为图片, 调用 Vision LLM 转录文字 (扫描版 PDF 兜底)
 
-        接收 pdf 文档与页码, 在 worker 内重新取页渲染, 避免多线程序列化同一 page 句柄。
+        每个线程独立打开一份 PdfDocument 渲染并关闭, 避免多线程共享同一文档对象
+        (pypdfium2 的 PdfDocument 非线程安全, 并发渲染会导致渲染异常与内存暴涨)。
+        file_data 为不可变字节, 多线程序列化安全。
         """
         try:
             from core.llm.factory import get_llm_client, is_vision_enabled
@@ -142,8 +144,12 @@ class PDFParser:
                 return ""
             from core.prompts.vision import OCR_PROMPT
 
-            page = pdf[page_num]
-            pil_image = page.render(scale=2.0).to_pil()
+            pdf = pypdfium2.PdfDocument(file_data)
+            try:
+                page = pdf[page_num]
+                pil_image = page.render(scale=2.0).to_pil()
+            finally:
+                pdf.close()
             buf = io.BytesIO()
             pil_image.save(buf, format="PNG")
             img_b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
