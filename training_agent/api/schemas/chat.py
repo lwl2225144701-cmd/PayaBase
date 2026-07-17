@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -57,13 +57,6 @@ class ChatResponse(BaseModel):
     latency_ms: int = 0
 
 
-class ChatStreamChunk(BaseModel):
-    content: str
-    citations: list[dict] = []
-    finished: bool = False
-    attachment_used: bool = False
-    ppt_task_id: Optional[str] = None  # deprecated, use artifact
-    pdf_task_id: Optional[str] = None  # deprecated, use artifact
-    artifact: Optional[dict] = None  # {"type": "ppt"|"pdf", "task_id": "..."}
-    agent: Optional[dict] = None  # {"run_id": "...", "run_db_id": "...", ...}
-    web_search_mode: Optional[str] = None  # "off" | "on" | "ask_pending"
+# ChatStreamChunk 已移至 core/chat/stream_types.py（消除 core→api 反向依赖）
+# 此处 re-export 保持向后兼容
+from core.chat.stream_types import ChatStreamChunk  # noqa: E402,F401

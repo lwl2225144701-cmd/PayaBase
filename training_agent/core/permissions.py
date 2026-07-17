@@ -6,7 +6,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 from sqlalchemy.sql import ColumnElement
 
-from api.schemas.common import UserInfo
+from core.domain.identity.user_info import UserInfo
 from models.tables import KnowledgeBase
 
 

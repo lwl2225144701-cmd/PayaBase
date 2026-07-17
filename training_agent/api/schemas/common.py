@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Generic, Optional, TypeVar
+from typing import Generic, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
@@ -24,19 +24,9 @@ class PageParams(BaseModel):
     page_size: int = Field(default=20, ge=1, le=100)
 
 
-class UserInfo(BaseModel):
-    id: str
-    tenant_id: str
-    department_id: Optional[str] = None
-    department_name: Optional[str] = None
-    hr_user_id: Optional[str] = None
-    name: str
-    email: str
-    role: str = "user"
-    is_super_admin: bool = False
-    is_admin: bool = False
-    is_training_admin: bool = False  # 向后兼容
-    can_manage_knowledge_bases: bool = False
+# UserInfo 已移至 core/domain/identity/user_info.py（消除 core→api 反向依赖）
+# 此处 re-export 保持向后兼容
+from core.domain.identity.user_info import UserInfo  # noqa: E402,F401
 
 
 class DepartmentResponse(BaseModel):

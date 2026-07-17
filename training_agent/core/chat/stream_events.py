@@ -4,7 +4,7 @@ import asyncio
 import threading
 import logging
 
-from api.schemas.chat import ChatStreamChunk
+from core.chat.stream_types import ChatStreamChunk
 
 logger = logging.getLogger(__name__)
 

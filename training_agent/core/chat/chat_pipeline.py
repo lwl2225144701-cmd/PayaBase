@@ -11,7 +11,9 @@ import logging
 
 from fastapi.responses import StreamingResponse
 
-from api.deps import DBSession, CurrentUser
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from core.domain.identity.user_info import UserInfo
 
 from core.config import settings
 
@@ -94,8 +96,8 @@ async def handle_chat(
     message: str,
     knowledge_base_id_str: str | None,
     files: list,
-    db: DBSession,
-    current_user: CurrentUser,
+    db: AsyncSession,
+    current_user: UserInfo,
     web_search: bool | None = None,
 ):
     """Core chat logic shared by both JSON and form-data routes."""

@@ -1,12 +1,11 @@
 """Web search state management for conversations."""
 
-import uuid
 import logging
 from typing import Optional
 
 from fastapi.responses import StreamingResponse
 
-from api.schemas.chat import ChatStreamChunk
+from core.chat.stream_types import ChatStreamChunk
 
 logger = logging.getLogger(__name__)
 
