@@ -21,6 +21,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.config import settings
+from core.domain.knowledge_base.aggregates import Document as DomainDocument
 from core.exceptions import NotFoundException, ValidationException
 from core.infrastructure.minio.client import get_minio_client
 from core.permissions import require_manage_kb
@@ -288,13 +289,14 @@ class ImportDocumentUseCase:
 
     def _idempotent_result(self, existing: Document) -> DocumentImportResult | None:
         """幂等命中时返回结果；error 等状态返回 None 表示继续 persist（允许重试）。"""
-        if existing.status == "ready":
+        doc = DomainDocument.from_orm(existing)
+        if doc.is_indexed():
             return DocumentImportResult(
                 document=existing,
                 message="文档已存在且已索引完成",
                 status_override="already_indexed",
             )
-        if existing.status in ("pending", "indexing"):
+        if doc.is_indexing():
             return DocumentImportResult(document=existing, message="文档已在索引中")
         return None
 

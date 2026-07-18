@@ -12,6 +12,7 @@ from api.schemas.doc import (
     DocumentResponse,
 )
 from core.application.documents import ImportDocumentUseCase
+from core.domain.knowledge_base.aggregates import Document as DomainDocument
 from core.exceptions import NotFoundException
 from core.infrastructure.db.repositories import (
     ChunkRepositoryImpl,
@@ -194,15 +195,8 @@ async def get_indexing_status(
 
     chunk_count = await ChunkRepositoryImpl(db).count_by_document(doc.id)
 
-    # 使用Document.progress
-    if doc.progress:
-        progress = doc.progress
-    elif doc.status == "ready":
-        progress = 100
-    elif doc.status == "indexing":
-        progress = min(chunk_count * 10, 90)
-    else:
-        progress = 0
+    # 进度优先用存储值，否则由领域实体推导（ready→100, indexing→min(chunk*10,90), else→0）
+    progress = doc.progress or DomainDocument.from_orm(doc).derive_progress()
 
     return Response(data={
         "id": str(doc.id),

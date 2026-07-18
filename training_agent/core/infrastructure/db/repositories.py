@@ -17,6 +17,7 @@ from uuid import UUID
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from core.domain.knowledge_base.aggregates import DocumentStatus
 from models.tables import (
     AgentRun,
     AgentStep,
@@ -137,14 +138,16 @@ class DocumentRepositoryImpl:
         if q:
             base_filters.append(Document.title.ilike(f"%{q}%"))
         if status and status != "all":
-            if status == "ready":
-                base_filters.append(Document.status == "ready")
-            elif status == "error":
-                base_filters.append(Document.status == "error")
-            elif status == "indexing":
-                base_filters.append(Document.status.in_(["indexing", "pending"]))
-            elif status == "pending":
-                base_filters.append(Document.status == "pending")
+            if status == DocumentStatus.READY:
+                base_filters.append(Document.status == DocumentStatus.READY)
+            elif status == DocumentStatus.ERROR:
+                base_filters.append(Document.status == DocumentStatus.ERROR)
+            elif status == DocumentStatus.INDEXING:
+                base_filters.append(
+                    Document.status.in_([DocumentStatus.INDEXING, DocumentStatus.PENDING])
+                )
+            elif status == DocumentStatus.PENDING:
+                base_filters.append(Document.status == DocumentStatus.PENDING)
             # 其它值忽略, 不加 status 条件
 
         # 排序
