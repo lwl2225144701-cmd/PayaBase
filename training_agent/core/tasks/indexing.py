@@ -17,13 +17,13 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 from langchain_core.documents import Document as LCDocument
 
 from core.config import settings
-from core.tasks import celery_app
+from core.infrastructure.db.sync_session import get_sync_engine, get_sync_session
 from models.tables import Chunk, Document
+from core.tasks import celery_app
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,8 +41,7 @@ def update_document_status(
     error_message: Optional[str] = None,
 ):
     """更新文档状态"""
-    engine = create_engine(settings.sync_database_url)
-    with Session(engine) as db:
+    with get_sync_session() as db:
         db.execute(
             text("""
                 UPDATE documents 
@@ -60,7 +59,6 @@ def update_document_status(
             }
         )
         db.commit()
-    engine.dispose()
 
 
 def download_from_minio(file_path: str) -> bytes:
@@ -561,11 +559,9 @@ def batch_insert_chunks(
 
     if len(chunks_data) != len(vectors):
         raise ValueError(f"向量数量不匹配: chunks={len(chunks_data)}, vectors={len(vectors)}")
-    
-    engine = create_engine(settings.sync_database_url, pool_pre_ping=True)
-    
+
     try:
-        with engine.begin() as conn:
+        with get_sync_engine().begin() as conn:
             # 0. 先删除该文档的旧 chunk（重索引时必须清理，否则新旧向量并存导致检索混乱）
             conn.execute(
                 text("DELETE FROM chunks WHERE document_id=:doc_id"),
@@ -613,8 +609,6 @@ def batch_insert_chunks(
     except Exception as e:
         # 事务自动回滚
         raise
-    finally:
-        engine.dispose()
 
 
 @celery_app.task(bind=True, max_retries=MAX_RETRIES, time_limit=3600, soft_time_limit=3000)
@@ -630,12 +624,9 @@ def index_document_task(self, document_id: str):
     start_time = time.time()
     logger.info(f"[Celery] 开始索引文档: {document_id}")
     
-    # 创建数据库引擎
-    engine = create_engine(settings.sync_database_url)
-    
     try:
         # ===== Stage1: 获取文档信息 =====
-        with Session(engine) as db:
+        with get_sync_session() as db:
             result = db.execute(
                 text("""
                     SELECT d.id, d.file_path, d.file_type, d.title, d.source_type, d.source_url, d.knowledge_base_id, kb.tenant_id 
@@ -797,16 +788,12 @@ def index_document_task(self, document_id: str):
         else:
             update_document_status(document_id, "failed", error_message=error_msg)
             return {"status": "error", "message": error_msg}
-    
-    finally:
-        engine.dispose()
 
 
 @celery_app.task
 def check_index_status(document_id: str) -> dict:
     """检查文档索引状态"""
-    engine = create_engine(settings.sync_database_url)
-    with Session(engine) as db:
+    with get_sync_session() as db:
         result = db.execute(
             text("SELECT status, progress, chunk_count, error_message, indexed_at FROM documents WHERE id=:id"),
             {"id": document_id}

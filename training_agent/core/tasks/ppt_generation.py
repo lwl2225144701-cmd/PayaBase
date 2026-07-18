@@ -10,10 +10,10 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from core.config import settings
+from core.infrastructure.db.sync_session import get_sync_session
 from core.tasks import celery_app
 
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +28,7 @@ def update_ppt_status(
     error_message: Optional[str] = None,
 ):
     """Update PPT task status in database."""
-    engine = create_engine(settings.sync_database_url)
-    with Session(engine) as db:
+    with get_sync_session() as db:
         db.execute(
             text("""
                 UPDATE ppt_tasks
@@ -48,7 +47,6 @@ def update_ppt_status(
             },
         )
         db.commit()
-    engine.dispose()
 
 
 def generate_slides_json(title: str, content: str) -> list[dict]:

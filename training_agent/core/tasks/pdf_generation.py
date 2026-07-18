@@ -10,10 +10,10 @@ import time
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 from core.config import settings
+from core.infrastructure.db.sync_session import get_sync_session
 from core.tasks import celery_app
 
 logging.basicConfig(level=logging.INFO)
@@ -28,8 +28,7 @@ def update_pdf_status(
     error_message: Optional[str] = None,
 ):
     """Update PDF task status in database."""
-    engine = create_engine(settings.sync_database_url)
-    with Session(engine) as db:
+    with get_sync_session() as db:
         db.execute(
             text("""
                 UPDATE pdf_tasks
@@ -48,7 +47,6 @@ def update_pdf_status(
             },
         )
         db.commit()
-    engine.dispose()
 
 
 def _register_cjk_font(pdf) -> bool:
