@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Protocol
 from uuid import UUID
 
 if TYPE_CHECKING:  # 仅类型检查期引用 ORM，运行时零依赖
+    from core.rag.retriever import RetrievedChunk
     from models.tables import Chunk, Document, KnowledgeBase
 
 
@@ -77,8 +78,14 @@ class ChunkRepository(Protocol):
         self,
         kb_id: UUID,
         query_vector: list[float],
+        query_text: str = "",
         top_k: int = 10,
         filters: dict | None = None,
-    ) -> list[Chunk]:
-        """混合检索（向量 + BM25 + RRF + rerank），返回 top_k chunk。"""
+    ) -> list[RetrievedChunk]:
+        """混合检索（向量 + BM25 + RRF + rerank），返回 top_k 带分 chunk。
+
+        query_text 用于 BM25 词频统计；不传则退化为纯向量检索。
+        委托至 core/rag/retriever.py::Retriever.similarity_search 引擎，
+        不在仓储层重写检索逻辑（避免影响 RAG 主链路）。
+        """
         ...

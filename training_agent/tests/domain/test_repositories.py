@@ -76,7 +76,7 @@ class FakeChunkRepository:
         self._store[document_id] = []
         return n
 
-    async def hybrid_search(self, kb_id, query_vector, top_k=10, filters=None):
+    async def hybrid_search(self, kb_id, query_vector, query_text="", top_k=10, filters=None):
         raise NotImplementedError
 
 

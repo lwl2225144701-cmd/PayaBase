@@ -4,13 +4,14 @@
 - 只 add / flush / execute，不 commit / rollback（事务由 UnitOfWork 管）。
 - 端口方法返回 ORM 模型对象（Phase 4 引入独立领域实体 + 映射后替换）。
 - 租户隔离：写操作校验 tenant_id，读操作按 tenant_id 过滤。
-- hybrid_search 留 Phase 3 从 retriever 迁移（涉及向量+BM25+RRF+rerank）。
+- hybrid_search 委托至 core/rag/retriever.py::Retriever.similarity_search 引擎
+  （Phase 3 落地，不重写检索逻辑，避免影响 RAG 主链路）。
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from sqlalchemy import delete, func, select, update
@@ -25,6 +26,9 @@ from models.tables import (
     KnowledgeBase,
     Message,
 )
+
+if TYPE_CHECKING:  # 仅类型检查期引用，运行时零依赖
+    from core.rag.retriever import RetrievedChunk
 
 
 class KnowledgeBaseRepositoryImpl:
@@ -157,15 +161,28 @@ class ChunkRepositoryImpl:
         self,
         kb_id: UUID,
         query_vector: list[float],
+        query_text: str = "",
         top_k: int = 10,
         filters: dict | None = None,
-    ) -> list[Chunk]:
+    ) -> list[RetrievedChunk]:
         """混合检索（向量 + BM25 + RRF + rerank）。
 
-        Phase 3 从 core/rag/retriever.py::similarity_search 迁移至此。
+        Phase 3：委托至 core/rag/retriever.py::Retriever.similarity_search 引擎，
+        不重写检索逻辑（避免影响 RAG 主链路）。调用方（rag_flow / platform /
+        knowledge_tool）仍直接用 Retriever.search()，本方法为端口补充能力，
+        供后续 Repository 化检索调用方使用。
         """
-        raise NotImplementedError(
-            "hybrid_search 将在 Phase 3 从 retriever 迁移至仓储层"
+        from core.rag.retriever import Retriever
+
+        return await Retriever(self.session).similarity_search(
+            query_vector=query_vector,
+            kb_id=str(kb_id),
+            top_k=top_k,
+            threshold=0.2,
+            filters=filters,
+            query_text=query_text,
+            use_rerank=True,
+            return_timings=False,
         )
 
 
