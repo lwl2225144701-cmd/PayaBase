@@ -107,6 +107,95 @@ class DocumentRepositoryImpl:
         )
         return (result.rowcount or 0) > 0
 
+    async def list_by_kb_paginated(
+        self,
+        kb_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        q: str | None = None,
+        status: str | None = None,
+        sort: str = "created_desc",
+    ) -> tuple[list[Document], int, dict[str, int]]:
+        """列出租户知识库文档（过滤 + 排序 + 分页）。
+
+        返回 (items, total, status_counts)。status_counts 为该 kb 全库状态分布，
+        不把 q 纳入 counts（保持反映 KB 整体状态，避免每次搜索重算 4 个 count）。
+        """
+        # 边界保护
+        page = max(1, page)
+        allowed_sizes = {10, 25, 50}
+        if page_size not in allowed_sizes:
+            if page_size > 100:
+                page_size = 100
+            elif page_size < 10:
+                page_size = 10
+            else:
+                page_size = 10  # 其它非白名单值兜底为 10
+
+        # 基础过滤条件
+        base_filters = [Document.knowledge_base_id == kb_id]
+        if q:
+            base_filters.append(Document.title.ilike(f"%{q}%"))
+        if status and status != "all":
+            if status == "ready":
+                base_filters.append(Document.status == "ready")
+            elif status == "error":
+                base_filters.append(Document.status == "error")
+            elif status == "indexing":
+                base_filters.append(Document.status.in_(["indexing", "pending"]))
+            elif status == "pending":
+                base_filters.append(Document.status == "pending")
+            # 其它值忽略, 不加 status 条件
+
+        # 排序
+        if sort == "created_asc":
+            order_by = Document.created_at.asc()
+        elif sort == "name_asc":
+            order_by = Document.title.asc()
+        elif sort == "name_desc":
+            order_by = Document.title.desc()
+        else:
+            order_by = Document.created_at.desc()
+
+        # 查询 items (带 offset/limit)
+        items_result = await self.session.execute(
+            select(Document)
+            .where(*base_filters)
+            .order_by(order_by)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+        items = list(items_result.scalars().all())
+
+        # total = base_filters 下命中条数
+        total = await self.session.scalar(
+            select(func.count(Document.id)).where(*base_filters)
+        ) or 0
+
+        # counts: 该 kb 全库各状态数量
+        counts_result = await self.session.execute(
+            select(Document.status, func.count(Document.id)).where(
+                Document.knowledge_base_id == kb_id
+            ).group_by(Document.status)
+        )
+        status_rows = counts_result.all()
+
+        counts = {
+            "all": sum(c for _, c in status_rows),
+            "ready": 0,
+            "indexing": 0,  # indexing + pending 之和
+            "error": 0,
+        }
+        for s, c in status_rows:
+            if s == "ready":
+                counts["ready"] += c
+            elif s in ("indexing", "pending"):
+                counts["indexing"] += c
+            elif s == "error":
+                counts["error"] += c
+
+        return items, total, counts
+
 
 class ChunkRepositoryImpl:
     """ChunkRepository 端口实现（共享内核：Indexing 写、Retrieval 读）。"""
@@ -156,6 +245,12 @@ class ChunkRepositoryImpl:
             .execution_options(synchronize_session=False)
         )
         return result.rowcount or 0
+
+    async def count_by_document(self, document_id: UUID) -> int:
+        result = await self.session.execute(
+            select(func.count(Chunk.id)).where(Chunk.document_id == document_id)
+        )
+        return result.scalar_one_or_none() or 0
 
     async def hybrid_search(
         self,

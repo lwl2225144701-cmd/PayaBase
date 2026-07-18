@@ -47,6 +47,25 @@ class DocumentRepository(Protocol):
     async def list_by_kb(self, kb_id: UUID) -> list[Document]:
         ...
 
+    async def list_by_kb_paginated(
+        self,
+        kb_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        q: str | None = None,
+        status: str | None = None,
+        sort: str = "created_desc",
+    ) -> tuple[list[Document], int, dict[str, int]]:
+        """列出租户知识库文档（过滤 + 排序 + 分页）。
+
+        返回 (items, total, status_counts)：
+        - items: 当前页文档
+        - total: base_filters 下命中总数
+        - status_counts: 该 kb 全库状态分布 {all, ready, indexing, error}
+          （indexing 含 pending）
+        """
+        ...
+
     async def save(self, doc: Document) -> Document:
         """新建或更新文档。"""
         ...
@@ -72,6 +91,10 @@ class ChunkRepository(Protocol):
 
     async def delete_by_document(self, document_id: UUID) -> int:
         """删除某文档的全部 chunk，返回删除数量。"""
+        ...
+
+    async def count_by_document(self, document_id: UUID) -> int:
+        """统计某文档的 chunk 数量。"""
         ...
 
     async def hybrid_search(

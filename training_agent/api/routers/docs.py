@@ -2,7 +2,6 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Query, UploadFile
-from sqlalchemy import func, select
 
 from api.deps import CurrentUser, DBSession
 from api.schemas.common import Response
@@ -14,8 +13,12 @@ from api.schemas.doc import (
 )
 from core.application.documents import ImportDocumentUseCase
 from core.exceptions import NotFoundException
+from core.infrastructure.db.repositories import (
+    ChunkRepositoryImpl,
+    DocumentRepositoryImpl,
+)
 from core.permissions import require_visible_kb
-from models.tables import Chunk, Document
+from models.tables import Document
 
 logger = logging.getLogger(__name__)
 
@@ -59,58 +62,17 @@ async def list_documents(
     """
     kb = await require_visible_kb(db, current_user, uuid.UUID(kb_id))
 
-    # 边界保护
-    page = max(1, page)
-    allowed_sizes = {10, 25, 50}
-    if page_size not in allowed_sizes:
-        # 限制在 10/25/50, 默认 10, 最大不超过 100
-        if page_size > 100:
-            page_size = 100
-        elif page_size < 10:
-            page_size = 10
-        else:
-            page_size = 10  # 其它非白名单值兜底为 10
-
-    # 基础过滤条件
-    base_filters = [Document.knowledge_base_id == kb.id]
-    if q:
-        # 按 title 模糊搜索, 走 ILIKE (PostgreSQL 不区分大小写)
-        base_filters.append(Document.title.ilike(f"%{q}%"))
-    if status and status != "all":
-        if status == "ready":
-            base_filters.append(Document.status == "ready")
-        elif status == "error":
-            base_filters.append(Document.status == "error")
-        elif status == "indexing":
-            # "indexing" tab 同时包含 indexing + pending
-            base_filters.append(Document.status.in_(["indexing", "pending"]))
-        elif status == "pending":
-            base_filters.append(Document.status == "pending")
-        # 其它值忽略, 不加 status 条件
-
-    # 排序
-    if sort == "created_asc":
-        order_by = Document.created_at.asc()
-    elif sort == "name_asc":
-        order_by = Document.title.asc()
-    elif sort == "name_desc":
-        order_by = Document.title.desc()
-    else:
-        # 默认 created_desc
-        order_by = Document.created_at.desc()
-
-    # 查询 items (带 offset/limit)
-    items_query = (
-        select(Document)
-        .where(*base_filters)
-        .order_by(order_by)
-        .offset((page - 1) * page_size)
-        .limit(page_size)
+    # 过滤 + 排序 + 分页 + 计数 全部下沉至 DocumentRepository
+    items, total, counts = await DocumentRepositoryImpl(db).list_by_kb_paginated(
+        kb_id=kb.id,
+        page=page,
+        page_size=page_size,
+        q=q,
+        status=status,
+        sort=sort,
     )
-    items_result = await db.execute(items_query)
-    docs = items_result.scalars().all()
 
-    items = [
+    items_dto = [
         DocumentListResponse(
             id=str(doc.id),
             title=doc.title,
@@ -121,43 +83,16 @@ async def list_documents(
             chunk_count=doc.chunk_count or 0,
             created_at=doc.created_at,
         )
-        for doc in docs
+        for doc in items
     ]
 
     # 兼容模式: 直接返回 items
     if not with_total:
-        return Response(data=items)
+        return Response(data=items_dto)
 
     # 完整分页模式: 返回 total + counts
-    # total = 在 base_filters 之下的全部命中条数
-    total_query = select(func.count(Document.id)).where(*base_filters)
-    total = await db.scalar(total_query) or 0
-
-    # counts: 按 kb 全库统计各状态数量
-    # NOTE: 当前实现不把 q 纳入 counts, 保持 counts 反映"该 KB 整体状态分布",
-    #       避免每次搜索都重算 4 个 count。
-    counts_query = select(Document.status, func.count(Document.id)).where(
-        Document.knowledge_base_id == kb.id
-    ).group_by(Document.status)
-    counts_result = await db.execute(counts_query)
-    status_rows = counts_result.all()
-
-    counts = {
-        "all": sum(c for _, c in status_rows),
-        "ready": 0,
-        "indexing": 0,  # indexing + pending 之和
-        "error": 0,
-    }
-    for s, c in status_rows:
-        if s == "ready":
-            counts["ready"] += c
-        elif s in ("indexing", "pending"):
-            counts["indexing"] += c
-        elif s == "error":
-            counts["error"] += c
-
     return Response(data=DocumentPageResponse(
-        items=items,
+        items=items_dto,
         total=total,
         page=page,
         page_size=page_size,
@@ -223,15 +158,9 @@ async def get_document(
     db: DBSession,
     current_user: CurrentUser,
 ):
-    await require_visible_kb(db, current_user, uuid.UUID(kb_id))
-    result = await db.execute(
-        select(Document).where(
-            Document.id == uuid.UUID(doc_id),
-            Document.knowledge_base_id == uuid.UUID(kb_id),
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
+    kb = await require_visible_kb(db, current_user, uuid.UUID(kb_id))
+    doc = await DocumentRepositoryImpl(db).get_by_id(uuid.UUID(doc_id))
+    if not doc or doc.knowledge_base_id != kb.id:
         raise NotFoundException("Document not found")
 
     return Response(data=_document_response(doc))
@@ -258,20 +187,12 @@ async def get_indexing_status(
     db: DBSession,
     current_user: CurrentUser,
 ):
-    await require_visible_kb(db, current_user, uuid.UUID(kb_id))
-    result = await db.execute(
-        select(Document).where(
-            Document.id == uuid.UUID(doc_id),
-            Document.knowledge_base_id == uuid.UUID(kb_id),
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
+    kb = await require_visible_kb(db, current_user, uuid.UUID(kb_id))
+    doc = await DocumentRepositoryImpl(db).get_by_id(uuid.UUID(doc_id))
+    if not doc or doc.knowledge_base_id != kb.id:
         raise NotFoundException("Document not found")
 
-    chunk_count = await db.scalar(
-        select(func.count(Chunk.id)).where(Chunk.document_id == doc.id)
-    ) or 0
+    chunk_count = await ChunkRepositoryImpl(db).count_by_document(doc.id)
 
     # 使用Document.progress
     if doc.progress:
