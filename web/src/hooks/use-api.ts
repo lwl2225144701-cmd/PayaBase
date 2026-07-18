@@ -1,6 +1,44 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import {
+  getDocumentChunks,
+  getDocumentContent,
+  getDocumentDetail,
+} from "@/lib/document-chunk-service";
 import { api } from "@/lib/api";
 
+// Document chunks / detail
+export function useDocumentDetail(kbId: string, docId: string) {
+  return useQuery({
+    queryKey: ["documentDetail", kbId, docId],
+    queryFn: () => getDocumentDetail(kbId, docId),
+    enabled: !!kbId && !!docId,
+  });
+}
+
+export function useDocumentContent(kbId: string, docId: string) {
+  return useQuery({
+    queryKey: ["documentContent", kbId, docId],
+    queryFn: () => getDocumentContent(kbId, docId),
+    enabled: !!kbId && !!docId,
+  });
+}
+
+export function useDocumentChunks(
+  kbId: string,
+  docId: string,
+  params: {
+    page: number;
+    pageSize: number;
+    keyword?: string;
+    status?: string;
+  }
+) {
+  return useQuery({
+    queryKey: ["documentChunks", kbId, docId, params],
+    queryFn: () => getDocumentChunks(kbId, docId, params),
+    enabled: !!kbId && !!docId,
+  });
+}
 // Knowledge Bases
 export function useKnowledgeBases() {
   return useQuery({

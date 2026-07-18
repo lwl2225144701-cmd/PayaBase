@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -83,7 +83,7 @@ function formatDate(s?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-function DocStatus({ kbId, doc }: { kbId: string; doc: any }) {
+function DocStatus({ kbId, doc, detailHref }: { kbId: string; doc: any; detailHref?: string }) {
   const queryClient = useQueryClient();
   const isIndexing = doc.status === "indexing" || doc.status === "pending";
 
@@ -100,6 +100,14 @@ function DocStatus({ kbId, doc }: { kbId: string; doc: any }) {
   const progress: number = statusData?.progress || 0;
   const chunkCount: number = statusData?.chunk_count || doc.chunk_count || 0;
   const errorMessage: string | undefined = statusData?.error_message;
+
+  const chunkCountLink = chunkCount > 0 && detailHref ? (
+    <Link href={detailHref} className="text-xs text-muted-foreground hover:text-primary hover:underline">
+      {chunkCount} chunks
+    </Link>
+  ) : chunkCount > 0 ? (
+    <span className="text-xs text-muted-foreground">{chunkCount} chunks</span>
+  ) : null;
 
   if (isLoading && !statusData) {
     return (
@@ -118,9 +126,7 @@ function DocStatus({ kbId, doc }: { kbId: string; doc: any }) {
         >
           <CheckCircle2Icon className="mr-1 h-3 w-3" /> 已完成
         </Badge>
-        {chunkCount > 0 && (
-          <span className="text-xs text-muted-foreground">{chunkCount} chunks</span>
-        )}
+        {chunkCountLink}
       </div>
     );
   }
@@ -217,6 +223,7 @@ function TableRowSkeleton() {
 
 export default function DocListPage({ params }: { params: { id: string } }) {
   const kbId = params.id;
+  const searchParams = useSearchParams();
   const { data: kb, isLoading: kbLoading } = useKnowledgeBase(kbId);
   const uploadDocs = useUploadDocuments();
   const deleteDoc = useDeleteDocument();
@@ -230,6 +237,23 @@ export default function DocListPage({ params }: { params: { id: string } }) {
   const [pageSize, setPageSize] = useState(10);
   const [activeTab, setActiveTab] = useState<"documents" | "pipeline" | "retrieval_test" | "settings">("documents");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const initializedFromQuery = useRef(false);
+
+  // 从 URL query 初始化列表状态，保证从详情页返回时状态不丢失
+  useEffect(() => {
+    if (initializedFromQuery.current) return;
+    initializedFromQuery.current = true;
+    const q = searchParams.get("q") || "";
+    const status = (searchParams.get("status") as StatusFilter) || "all";
+    const sort = (searchParams.get("sort") as SortKey) || "created_desc";
+    const p = Number(searchParams.get("page"));
+    const ps = Number(searchParams.get("pageSize"));
+    if (q) setSearchKeyword(q);
+    if (status && status !== "all") setStatusFilter(status);
+    if (sort && sort !== "created_desc") setSortKey(sort);
+    if (p > 0) setPage(p);
+    if (ps > 0) setPageSize(ps);
+  }, [searchParams]);
 
   const normalizedKeyword = searchKeyword.trim().toLowerCase();
 
@@ -333,6 +357,17 @@ export default function DocListPage({ params }: { params: { id: string } }) {
     } catch (e: any) {
       alert("重新索引失败: " + (e.message || "未知错误"));
     }
+  };
+
+  const buildChunkDetailHref = (docId: string) => {
+    const query = new URLSearchParams();
+    if (page !== 1) query.set("page", String(page));
+    if (searchKeyword) query.set("q", searchKeyword);
+    if (statusFilter !== "all") query.set("status", statusFilter);
+    if (sortKey !== "created_desc") query.set("sort", sortKey);
+    if (pageSize !== 10) query.set("pageSize", String(pageSize));
+    const qs = query.toString();
+    return `/knowledge/${kbId}/document/${docId}/chunks${qs ? `?${qs}` : ""}`;
   };
 
   const loading = docsPageQuery.isLoading || kbLoading;
@@ -533,6 +568,7 @@ export default function DocListPage({ params }: { params: { id: string } }) {
             showEmptySearch={showEmptySearch}
             showEmptyFilter={showEmptyFilter}
             fileInputRef={fileInputRef}
+            buildChunkDetailHref={buildChunkDetailHref}
           />
         ) : activeTab === "pipeline" ? (
           <PipelinePanel
@@ -585,6 +621,7 @@ type DocumentsTabProps = {
   showEmptySearch: boolean;
   showEmptyFilter: boolean;
   fileInputRef: React.RefObject<HTMLInputElement>;
+  buildChunkDetailHref: (docId: string) => string;
 };
 
 function DocumentsTabContent(props: DocumentsTabProps) {
@@ -621,6 +658,7 @@ function DocumentsTabContent(props: DocumentsTabProps) {
     showEmptySearch,
     showEmptyFilter,
     fileInputRef,
+    buildChunkDetailHref,
   } = props;
 
   return (
@@ -903,9 +941,13 @@ function DocumentsTabContent(props: DocumentsTabProps) {
                           <FileIcon className="h-3.5 w-3.5" />
                         </div>
                         <div className="min-w-0">
-                          <div className="truncate text-sm font-medium leading-snug" title={doc.title}>
+                          <Link
+                            href={buildChunkDetailHref(doc.id)}
+                            className="block truncate text-sm font-medium leading-snug hover:text-primary hover:underline"
+                            title={doc.title}
+                          >
                             {doc.title}
-                          </div>
+                          </Link>
                           <div className="mt-0.5 text-[11px] uppercase tracking-wide text-muted-foreground/80">
                             {(doc.file_type || "file").split("/").pop()?.toUpperCase() || "FILE"}
                           </div>
@@ -925,7 +967,7 @@ function DocumentsTabContent(props: DocumentsTabProps) {
                       {formatDate(doc.created_at)}
                     </td>
                     <td className="px-4 py-3">
-                      <DocStatus kbId={kbId} doc={doc} />
+                      <DocStatus kbId={kbId} doc={doc} detailHref={buildChunkDetailHref(doc.id)} />
                     </td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-1">

@@ -1,3 +1,10 @@
+import {
+  MOCK_DOCUMENT_CONTENT,
+  MOCK_DOCUMENT_DETAIL,
+  mockDocumentChunks,
+} from "./document-chunk-mock";
+import type { ChunkListResponse, DocumentDetail } from "@/types";
+
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 const MOCK_MODE = process.env.NEXT_PUBLIC_MOCK_MODE === "true";
 
@@ -276,6 +283,46 @@ class ApiClient {
 
   async getIndexingStatus(kbId: string, docId: string) {
     const res = await this.request<{ code: number; data: any }>(`/api/kb/${kbId}/docs/${docId}/indexing-status`);
+    return res.data;
+  }
+
+  // Document Chunk Detail
+  async getDocumentDetail(kbId: string, docId: string): Promise<DocumentDetail> {
+    if (MOCK_MODE) {
+      return { ...MOCK_DOCUMENT_DETAIL, id: docId, knowledge_base_id: kbId };
+    }
+    const res = await this.request<{ code: number; data: DocumentDetail }>(
+      `/api/kb/${kbId}/docs/${docId}`
+    );
+    return res.data;
+  }
+
+  async getDocumentContent(kbId: string, docId: string): Promise<string> {
+    if (MOCK_MODE) {
+      return MOCK_DOCUMENT_CONTENT;
+    }
+    const res = await this.request<{ code: number; data: { content: string } }>(
+      `/api/kb/${kbId}/docs/${docId}/content`
+    );
+    return res.data.content;
+  }
+
+  async getDocumentChunks(
+    kbId: string,
+    docId: string,
+    params: { page: number; pageSize: number; keyword?: string; status?: string }
+  ): Promise<ChunkListResponse> {
+    if (MOCK_MODE) {
+      return mockDocumentChunks(params);
+    }
+    const query = new URLSearchParams();
+    query.set("page", String(params.page));
+    query.set("page_size", String(params.pageSize));
+    if (params.keyword) query.set("q", params.keyword);
+    if (params.status && params.status !== "all") query.set("status", params.status);
+    const res = await this.request<{ code: number; data: ChunkListResponse }>(
+      `/api/kb/${kbId}/docs/${docId}/chunks?${query.toString()}`
+    );
     return res.data;
   }
 

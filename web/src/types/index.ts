@@ -37,6 +37,38 @@ export interface Document {
   status: "pending" | "indexing" | "ready" | "error";
   indexed_at?: string;
   created_at: string;
+  chunk_count?: number;
+  strategy?: string;
+}
+
+export interface DocumentDetail extends Document {
+  chunk_count: number;
+  strategy: string;
+}
+
+export type ChunkVectorStatus = "indexed" | "error" | "pending";
+
+export interface Chunk {
+  id: string;
+  chunk_id: string;
+  document_id: string;
+  section_title?: string | null;
+  page_number?: number | null;
+  start_offset?: number | null;
+  end_offset?: number | null;
+  token_count?: number | null;
+  character_count?: number | null;
+  vector_status: ChunkVectorStatus;
+  embedding_model?: string | null;
+  created_at?: string;
+  content: string;
+}
+
+export interface ChunkListResponse {
+  items: Chunk[];
+  total: number;
+  page: number;
+  page_size: number;
 }
 
 export interface Message {
