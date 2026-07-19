@@ -1565,12 +1565,28 @@ function SettingsPanel({
 }
 
 // ====== Retrieval Test Panel (MVP) ======
+type ScoreBreakdown = {
+  vector_distance: number | null;
+  vector_score: number | null;
+  vector_rank: number | null;
+  bm25_score: number | null;
+  bm25_rank: number | null;
+  rrf_score: number | null;
+  rrf_rank: number | null;
+  rerank_score: number | null;
+  rerank_rank: number | null;
+};
+
 type RetrievalChunk = {
   chunk_id: string | null;
   document_id: string | null;
   document_title: string;
   content: string;
   score: number;
+  /** 分数类型: rerank=重排真实相关度; rrf=仅融合排序分(非相关度) */
+  score_type?: "rerank" | "rrf";
+  /** 各路分数拆解, 空值统一为 null */
+  score_breakdown?: ScoreBreakdown;
   rank: number;
   metadata: Record<string, any>;
 };
@@ -1619,6 +1635,39 @@ function scoreTextColor(score: number): string {
   return "text-amber-600 dark:text-amber-400";
 }
 
+// 详情字段空值统一显示 "—"，禁止出现 undefined / null / NaN
+function fmtNum(v: number | null | undefined): string {
+  if (v === null || v === undefined || Number.isNaN(v as number)) return "—";
+  return String(v);
+}
+
+// 相关度展示：根据 score_type 区分含义
+// - rerank: 重排相关度，可显示为百分比
+// - rrf: 仅融合排序分，禁止当相关度百分比展示
+function ScoreBadge({ score, scoreType }: { score: number; scoreType?: string }) {
+  const s = typeof score === "number" && !Number.isNaN(score) ? score : 0;
+  if (scoreType === "rerank") {
+    return (
+      <div className="text-right">
+        <div className="text-[10px] text-muted-foreground">重排相关度</div>
+        <div className={`text-sm font-semibold tabular-nums ${scoreTextColor(s)}`}>
+          {s.toFixed(4)}
+        </div>
+        <div className="text-[10px] text-muted-foreground">{(s * 100).toFixed(2)}%</div>
+      </div>
+    );
+  }
+  return (
+    <div className="text-right">
+      <div className="text-[10px] text-muted-foreground">RRF 融合分</div>
+      <div className="text-sm font-semibold tabular-nums text-muted-foreground">
+        {s.toFixed(4)}
+      </div>
+      <div className="text-[10px] text-muted-foreground">仅用于排序</div>
+    </div>
+  );
+}
+
 function highlightText(text: string, query: string) {
   const q = query.trim();
   if (!q) return text;
@@ -1660,6 +1709,15 @@ function RetrievalSummaryCard({ label, value }: { label: string; value: string }
     <div className="rounded-lg border bg-background p-3">
       <div className="text-[11px] text-muted-foreground">{label}</div>
       <div className="mt-1 text-xl font-semibold tabular-nums text-foreground">{value}</div>
+    </div>
+  );
+}
+
+function DetailItem({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="font-mono tabular-nums text-foreground/90">{value}</span>
     </div>
   );
 }
@@ -2044,19 +2102,23 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                           <CopyIcon className="h-3.5 w-3.5" />
                           ID
                         </button>
-                        <span className={`text-sm font-semibold ${scoreTextColor(item.score)}`}>
-                          {(item.score * 100).toFixed(1)}%
-                        </span>
+                        <ScoreBadge score={item.score} scoreType={item.score_type} />
                       </div>
                     </div>
 
-                    {/* Score bar */}
-                    <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                      <div
-                        className={`h-full rounded-full ${scoreColor(item.score)}`}
-                        style={{ width: `${Math.max(2, Math.min(100, item.score * 100))}%` }}
-                      />
-                    </div>
+                    {/* Score bar: 仅 rerank 路径展示相关度强度; rrf 不展示百分比强度 */}
+                    {item.score_type === "rerank" ? (
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={`h-full rounded-full ${scoreColor(item.score)}`}
+                          style={{ width: `${Math.max(2, Math.min(100, item.score * 100))}%` }}
+                        />
+                      </div>
+                    ) : (
+                      <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-muted">
+                        <div className="h-full w-full rounded-full bg-slate-300 dark:bg-slate-600" />
+                      </div>
+                    )}
 
                     <p className="mt-3 whitespace-pre-wrap break-words text-sm leading-6 text-foreground/90">
                       {highlightText(displayContent, query)}
@@ -2088,6 +2150,23 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                           {JSON.stringify(item.metadata, null, 2)}
                         </pre>
                       </details>
+                    )}
+
+                    {/* 分数拆解详情: 空值统一显示 "—" */}
+                    {item.score_breakdown && (
+                      <div className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 border-t border-border/60 pt-3 text-[11px] sm:grid-cols-4">
+                        <DetailItem label="向量排名" value={fmtNum(item.score_breakdown.vector_rank)} />
+                        <DetailItem label="BM25 分数" value={fmtNum(item.score_breakdown.bm25_score)} />
+                        <DetailItem label="BM25 排名" value={fmtNum(item.score_breakdown.bm25_rank)} />
+                        <DetailItem label="RRF 融合分" value={fmtNum(item.score_breakdown.rrf_score)} />
+                        <DetailItem label="RRF 排名" value={fmtNum(item.score_breakdown.rrf_rank)} />
+                        <DetailItem label="Rerank 分数" value={fmtNum(item.score_breakdown.rerank_score)} />
+                        <DetailItem
+                          label="最终排名"
+                          value={fmtNum(item.rank ?? item.score_breakdown.rerank_rank)}
+                        />
+                        <DetailItem label="类型" value={item.score_type === "rerank" ? "重排" : "RRF"} />
+                      </div>
                     )}
                   </div>
                   );

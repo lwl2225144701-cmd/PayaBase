@@ -308,7 +308,11 @@ export default function ChatPage({
                   <span className="font-mono truncate">chunk: {citation.chunk_id}</span>
                 )}
                 {typeof citation.score === "number" && (
-                  <span>score: {(citation.score * 100).toFixed(1)}%</span>
+                  citation.score_type === "rerank" ? (
+                    <span>相关度: {(citation.score * 100).toFixed(1)}%</span>
+                  ) : (
+                    <span title="RRF 融合分仅用于排序，不代表相关度">RRF: {citation.score.toFixed(4)}</span>
+                  )
                 )}
               </span>
             </span>

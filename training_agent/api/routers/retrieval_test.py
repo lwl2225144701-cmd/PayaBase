@@ -108,8 +108,21 @@ async def retrieval_test(
             "document_id": getattr(chunk, "document_id", None),
             "document_title": getattr(chunk, "document_title", ""),
             "content": getattr(chunk, "content", ""),
+            # score 兼容旧字段, 恒等于 final_score
             "score": float(getattr(chunk, "score", 0.0)),
-            "rank": idx,
+            "score_type": getattr(chunk, "score_type", "rrf"),
+            "score_breakdown": {
+                "vector_distance": getattr(chunk, "vector_distance", None),
+                "vector_score": getattr(chunk, "vector_score", None),
+                "vector_rank": getattr(chunk, "vector_rank", None),
+                "bm25_score": getattr(chunk, "bm25_score", None),
+                "bm25_rank": getattr(chunk, "bm25_rank", None),
+                "rrf_score": getattr(chunk, "rrf_score", None),
+                "rrf_rank": getattr(chunk, "rrf_rank", None),
+                "rerank_score": getattr(chunk, "rerank_score", None),
+                "rerank_rank": getattr(chunk, "rerank_rank", None),
+            },
+            "rank": getattr(chunk, "final_rank", idx) or idx,
             "metadata": getattr(chunk, "metadata", {}) or {},
         })
 
@@ -120,5 +133,6 @@ async def retrieval_test(
     return Response(data={
         "query": body.query.strip(),
         "items": items,
+        "trace_id": timings.get("trace_id"),
         "timings": timings,
     })

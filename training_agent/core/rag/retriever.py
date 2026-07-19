@@ -28,7 +28,17 @@ _rerank_cache = get_redis_client(db=3)
 
 @dataclass
 class RetrievedChunk:
-    """Retrieved chunk with score."""
+    """检索结果块, 携带完整分数字段。
+
+    分数语义约定:
+    - rrf_score / rrf_rank: 仅多路召回的融合排序结果, **不代表真实相关度**,
+      绝不可用于 percentage 展示或 threshold 过滤。
+    - rerank_score / rerank_rank: Reranker 归一化后的真实相关度(0~1)。
+    - final_score / final_rank: 最终对外分数。rerank 开启时 = rerank_score,
+      rerank 关闭时 = rrf_score。
+    - score: 为兼容旧调用方, 恒等于 final_score。
+    - score_type: "rerank" 或 "rrf", 前端据此决定如何展示。
+    """
     chunk_id: str
     content: str
     document_id: str
@@ -36,6 +46,78 @@ class RetrievedChunk:
     score: float
     metadata: dict
     rank: int = 0
+    # 分数拆解
+    vector_distance: Optional[float] = None
+    vector_score: Optional[float] = None
+    vector_rank: Optional[int] = None
+    bm25_score: Optional[float] = None
+    bm25_rank: Optional[int] = None
+    rrf_score: Optional[float] = None
+    rrf_rank: Optional[int] = None
+    rerank_score: Optional[float] = None
+    rerank_rank: Optional[int] = None
+    final_score: Optional[float] = None
+    final_rank: Optional[int] = None
+    score_type: str = "rrf"
+
+
+def apply_rerank_scores(
+    candidates: list[RetrievedChunk],
+    rerank_pairs: list[tuple[int, Optional[float]]],
+    threshold: float,
+    top_k: int,
+) -> list[RetrievedChunk]:
+    """Rerank 路径: 把 rerank 分数写回 chunk, 按 rerank_score 做 threshold 过滤, 再截取 top_k。
+
+    rerank_pairs: [(输入序号, rerank_score), ...], 已按重排后顺序排列。
+    通过输入序号映射回候选块(禁止 content 匹配)。
+
+    - score 为 None / 非数字 / NaN / Inf 时记录警告并跳过该结果, 不允许静默写成 0。
+    - threshold 在 rerank 之后、最终 top_k 之前执行; 不足 top_k 按实际数量返回;
+      全部低于 threshold 时返回空列表, 不补回低分结果。
+    """
+    reranked: list[RetrievedChunk] = []
+    for rank, (idx, score) in enumerate(rerank_pairs, 1):
+        if idx < 0 or idx >= len(candidates):
+            continue
+        if score is None or not isinstance(score, (int, float)) or math.isnan(score) or math.isinf(score):
+            logger.warning(
+                f"[RAG] apply_rerank_scores 跳过非法 score: idx={idx}, score={score}"
+            )
+            continue
+        chunk = candidates[idx]
+        chunk.rerank_score = float(score)
+        chunk.rerank_rank = rank
+        chunk.final_score = float(score)
+        chunk.final_rank = rank
+        chunk.score = float(score)
+        chunk.score_type = "rerank"
+        reranked.append(chunk)
+
+    valid = [c for c in reranked if c.rerank_score is not None]
+    filtered = [c for c in valid if c.rerank_score >= threshold]
+    final = filtered[:top_k]
+    for pos, c in enumerate(final, 1):
+        c.rank = pos
+        c.final_rank = pos
+    return final
+
+
+def finalize_rrf(candidates: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+    """RRF 路径(rerank 未开启/未生效): final_score = rrf_score, score_type='rrf'。
+
+    RRF 分数不是相关度, **不执行** threshold 过滤, 直接按 rrf_rank 截取 top_k。
+    """
+    for c in candidates:
+        c.final_score = c.rrf_score
+        c.final_rank = c.rrf_rank
+        c.score = c.rrf_score if c.rrf_score is not None else 0.0
+        c.score_type = "rrf"
+    final = candidates[:top_k]
+    for pos, c in enumerate(final, 1):
+        c.rank = pos
+        c.final_rank = pos
+    return final
 
 
 class Retriever:
@@ -126,30 +208,30 @@ class Retriever:
         """
         if not corpus or not query:
             return [(i, 0.0) for i in range(len(corpus))]
-        
+
         n = len(corpus)
         doc_freqs = Counter()
         for doc in corpus:
             for word in set(self._tokenize(doc)):
                 doc_freqs[word] += 1
-        
+
         # IDF
         idf = {}
         for word, df in doc_freqs.items():
             idf[word] = math.log((n - df + 0.5) / (df + 0.5) + 1)
-        
+
         # 文档长度
         doc_lens = [len(self._tokenize(d)) for d in corpus]
         avg_len = sum(doc_lens) / n if n > 0 else 1
-        
+
         query_words = self._tokenize(query)
-        
+
         scores = []
         for idx, doc in enumerate(corpus):
             doc_words = self._tokenize(doc)
             word_count = Counter(doc_words)
             doc_len = doc_lens[idx]
-            
+
             score = 0
             k1, b = 1.5, 0.75
             for word in query_words:
@@ -158,15 +240,15 @@ class Retriever:
                     numerator = tf * (k1 + 1)
                     denominator = tf + k1 * (1 - b + b * doc_len / avg_len)
                     score += idf.get(word, 0) * numerator / denominator
-            
+
             scores.append((idx, score))
-        
+
         scores.sort(key=lambda x: x[1], reverse=True)
         return scores[:top_k]
 
     def _rrf_fusion(
-        self, 
-        vector_results: list[tuple], 
+        self,
+        vector_results: list[tuple],
         bm25_results: list[tuple],
         k: int = 60
     ) -> list[tuple]:
@@ -175,13 +257,13 @@ class Retriever:
         RRF = sum(1 / (k + rank))
         """
         rrf_scores = {}
-        
+
         for rank, (doc_idx, score) in enumerate(vector_results, 1):
             rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + score / (k + rank)
-        
+
         for rank, (doc_idx, score) in enumerate(bm25_results, 1):
             rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + score / (k + rank)
-        
+
         return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
     async def search(
@@ -299,26 +381,26 @@ class Retriever:
             "rerank_cache_hit": False,
             "rerank_error": "",
         }
-        
+
         kb_uuid = uuid.UUID(kb_id)
         logger.info(f"[RAG] Hybrid检索 - kb={kb_id}, top_k={top_k}, filters={filters}")
-        
+
         # 1. 构建SQLwith过滤条件
         vector_top_k = top_k * 3
         query_vector_str = "[" + ",".join(map(str, query_vector)) + "]"
         logger.info(f"[RAG] 向量查询准备, vector_dim={len(query_vector)}")
-        
+
         where_clauses = ["d.knowledge_base_id = :kb_id", "c.vector IS NOT NULL"]
         params = {"kb_id": kb_uuid, "query_vector": query_vector_str, "limit": vector_top_k}
-        
+
         # 元数据过滤
         if filters:
             for key, value in filters.items():
                 where_clauses.append(f"c.meta->>:key = :{key}_value")
                 params[f"{key}_value"] = value
-        
+
         where_sql = " AND ".join(where_clauses)
-        
+
         logger.info(f"[RAG] 执行SQL查询")
         sql = text(f"""
             SELECT
@@ -336,21 +418,21 @@ class Retriever:
         rows = list(result.mappings().all())
         timings["vector_sql_ms"] = int((time.time() - t_stage) * 1000)
         logger.info(f"[RAG] 向量检索结果: {len(rows)}条")
-        
+
         if not rows:
             logger.info("[RAG] 无检索结果")
             timings["retrieval_total_ms"] = (
                 int(timings["vector_sql_ms"]) + int(timings["bm25_ms"]) + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
             )
             return ([], timings) if return_timings else []
-        
+
         # 2. 构建BM25 corpus
         corpus = []
         for row in rows:
             # 索引期不再生成 summary/HyDE，BM25 直接基于原文内容做词法匹配
             content = (row.get("summary") or row.get("content") or "")[:800]
             corpus.append(content)
-        
+
         # 3. BM25搜索
         logger.info(f"[RAG] 执行BM25检索")
         t_stage = time.time()
@@ -358,167 +440,231 @@ class Retriever:
         bm25_results = self._bm25_score(bm25_query, corpus, top_k=vector_top_k)
         timings["bm25_ms"] = int((time.time() - t_stage) * 1000)
         logger.info(f"[RAG] BM25结果: {len(bm25_results)}条")
-        
-        # 4. 向量结果
+
+        # 4. 向量分数与排名（按 distance 升序）
         logger.info(f"[RAG] 构建RRF融合")
         t_stage = time.time()
-        vector_results = []
+
+        vector_scored = []
         for i, row in enumerate(rows):
-            dist = row.get("distance", 1.0)
-            vector_results.append((i, 1 - float(dist) if dist else 0))
-        
-        # 5. RRF融合
+            raw = row.get("distance")
+            dist = float(raw) if raw is not None else 1.0
+            sim = 1.0 - dist if raw is not None else 0.0
+            vector_scored.append((i, dist, sim))
+        vector_scored.sort(key=lambda x: x[1])  # distance 升序
+        vector_rank_map: dict[int, tuple[float, float, int]] = {}
+        for rank, (i, dist, sim) in enumerate(vector_scored, 1):
+            vector_rank_map[i] = (dist, sim, rank)
+
+        # RRF 融合只接收 (doc_idx, 融合分); doc_idx 仍是 row 序号
+        vector_results = [(i, sim) for (i, _dist, sim) in vector_scored]
+
+        # 5. RRF 融合（仅用于候选排序，不代表真实相关度）
         combined = self._rrf_fusion(vector_results, bm25_results)
         timings["rrf_ms"] = int((time.time() - t_stage) * 1000)
         logger.info(f"[RAG] RRF融合完成, combined={len(combined)}")
-        
-        # 6. 构建返回（预排序结果，用于Rerank）
-        retrieved = []
-        used_ids = set()
-        logger.info(f"[RAG] 构建返回结果")
-        
-        for rank, (doc_idx, rrf_score) in enumerate(combined, 1):
+
+        # 6. 构建候选集（按 rrf_score 排序；此处不截取 top_k）
+        candidates: list[RetrievedChunk] = []
+        used_ids: set = set()
+        bm25_map: dict[int, tuple[float, int]] = {
+            idx: (score, rank) for rank, (idx, score) in enumerate(bm25_results, 1)
+        }
+        rrf_rank = 0
+        for doc_idx, rrf_score in combined:
             if doc_idx < len(rows):
                 row = rows[doc_idx]
-                if row["id"] in used_ids:
+                cid = row["id"]
+                if cid in used_ids:
                     continue
-                used_ids.add(row["id"])
-                retrieved.append(
+                used_ids.add(cid)
+                rrf_rank += 1
+                dist, sim, vrank = vector_rank_map.get(doc_idx, (None, None, None))
+                bm25_score, bm25_rank = bm25_map.get(doc_idx, (None, None))
+                candidates.append(
                     RetrievedChunk(
-                        chunk_id=str(row["id"]),
+                        chunk_id=str(cid),
                         content=row["content"],
                         document_id=str(row["document_id"]),
                         document_title=row["title"],
                         score=float(rrf_score),
                         metadata=row["meta"] or {},
-                        rank=rank,
+                        rank=rrf_rank,
+                        vector_distance=dist,
+                        vector_score=sim,
+                        vector_rank=vrank,
+                        bm25_score=bm25_score,
+                        bm25_rank=bm25_rank,
+                        rrf_score=float(rrf_score),
+                        rrf_rank=rrf_rank,
                     )
                 )
-            if len(retrieved) >= top_k:
-                break
-        
-        # 7. Rerank重排序（策略触发 + 候选限制 + 缓存 + 失败降级）
+
+        # 7. Rerank 精排 + threshold 过滤
         should_rerank, actual_candidate_k, rerank_reason = self._decide_rerank(
             query_text=query_text,
             top_k=top_k,
-            candidates=retrieved,
+            candidates=candidates,
             requested_use_rerank=use_rerank,
         )
         timings["rerank_candidate_k"] = actual_candidate_k
         timings["rerank_reason"] = rerank_reason
         timings["rerank_decision"] = "on" if should_rerank else "off"
 
+        trace_id = uuid.uuid4().hex
+        timings["trace_id"] = trace_id
+        timings["vector_result_count"] = len(rows)
+        timings["bm25_result_count"] = len(bm25_results)
+        timings["rrf_candidate_count"] = len(candidates)
+
+        reranked_pairs: list[tuple[int, Optional[float]]] | None = None
         if should_rerank:
-            logger.info(f"[RAG] 执行Rerank重排序, candidates={actual_candidate_k}, reason={rerank_reason}")
-            rerank_candidates = retrieved[:actual_candidate_k]
-            untouched_candidates = retrieved[actual_candidate_k:]
-            candidate_ids = [c.chunk_id for c in rerank_candidates]
-            normalized_query = self._normalize_query(query_text or "search")
-            cache_key = self._build_rerank_cache_key(
+            reranked_pairs = await self._run_rerank(
                 kb_id=kb_id,
-                normalized_query=normalized_query,
-                candidate_ids=candidate_ids,
-                candidate_k=actual_candidate_k,
+                query_text=query_text,
+                candidates=candidates,
+                actual_candidate_k=actual_candidate_k,
+                timings=timings,
             )
-            try:
-                cached = _rerank_cache.get(cache_key)
-            except Exception as e:
-                cached = None
-                logger.warning(f"[RAG] 读取Rerank缓存失败: {e}")
 
-            reranked_candidates: list[RetrievedChunk] | None = None
-            if cached:
-                try:
-                    cached_ids = json.loads(cached)
-                    cached_map = {c.chunk_id: c for c in rerank_candidates}
-                    ordered = [cached_map[cid] for cid in cached_ids if cid in cached_map]
-                    if len(ordered) == len(rerank_candidates):
-                        reranked_candidates = ordered
-                        timings["rerank_cache_hit"] = True
-                except Exception as e:
-                    logger.warning(f"[RAG] 解析Rerank缓存失败: {e}")
-
-            if reranked_candidates is None:
-                try:
-                    from core.rag.ranker import Reranker as RerankClient
-
-                    reranker = RerankClient()
-                    chunk_dicts = [
-                        {"content": c.content, "score": c.score}
-                        for c in rerank_candidates
-                    ]
-                    t_stage = time.time()
-                    reranked = await asyncio.to_thread(
-                        reranker.rerank,
-                        query_text or "search",
-                        chunk_dicts,
-                        actual_candidate_k,
-                        True,
-                    )
-                    timings["rerank_ms"] = int((time.time() - t_stage) * 1000)
-                    if not reranked:
-                        timings["rerank_reason"] = "rerank_failed_fallback"
-                        timings["rerank_error"] = "empty_rerank_result"
-                        reranked_candidates = rerank_candidates
-                    else:
-                        # Map content occurrence to candidate order, fallback to original order if mismatch.
-                        used = [False] * len(rerank_candidates)
-                        ordered: list[RetrievedChunk] = []
-                        for rc in reranked:
-                            content = rc.get("content", "")
-                            matched_idx = -1
-                            for idx, candidate in enumerate(rerank_candidates):
-                                if not used[idx] and candidate.content == content:
-                                    matched_idx = idx
-                                    break
-                            if matched_idx >= 0:
-                                used[matched_idx] = True
-                                ordered.append(rerank_candidates[matched_idx])
-                        if len(ordered) != len(rerank_candidates):
-                            timings["rerank_reason"] = "rerank_failed_fallback"
-                            timings["rerank_error"] = "rerank_mapping_mismatch"
-                            reranked_candidates = rerank_candidates
-                        else:
-                            reranked_candidates = ordered
-                            try:
-                                _rerank_cache.setex(
-                                    cache_key,
-                                    settings.rerank_cache_ttl_sec,
-                                    json.dumps([c.chunk_id for c in reranked_candidates]),
-                                )
-                            except Exception as e:
-                                logger.warning(f"[RAG] 写入Rerank缓存失败: {e}")
-                except Exception as e:
-                    timings["rerank_reason"] = "rerank_failed_fallback"
-                    timings["rerank_error"] = str(e)[:300]
-                    logger.warning(f"[RAG] Rerank失败: {e}")
-                    reranked_candidates = rerank_candidates
-
-            retrieved = reranked_candidates + untouched_candidates
-            for i, chunk in enumerate(retrieved, 1):
-                chunk.rank = i
-        
-        # 兜底
-        if not retrieved and rows:
-            logger.info(f"[RAG] 触发兜底策略")
-            row = rows[0]
-            retrieved.append(
-                RetrievedChunk(
-                    chunk_id=str(row["id"]),
-                    content=row["content"],
-                    document_id=str(row["document_id"]),
-                    document_title=row["title"],
-                    score=0.5,
-                    metadata=row["meta"] or {},
-                    rank=1,
-                )
+        if should_rerank and reranked_pairs is not None:
+            results = apply_rerank_scores(candidates, reranked_pairs, threshold, top_k)
+            timings["rerank_input_count"] = min(actual_candidate_k, len(candidates))
+            timings["rerank_output_count"] = len([p for p in reranked_pairs if p[1] is not None])
+            timings["threshold_passed_count"] = len(results)
+            timings["final_result_count"] = len(results)
+            logger.info(
+                f"[RAG][trace={trace_id}] rerank=on 完成 | "
+                f"query={query_text!r} top_k={top_k} threshold={threshold} | "
+                f"vector={len(rows)} bm25={len(bm25_results)} rrf_candidates={len(candidates)} | "
+                f"rerank_input={timings['rerank_input_count']} rerank_output={timings['rerank_output_count']} | "
+                f"threshold_passed={len(results)} final={len(results)}"
             )
-        
+        else:
+            logger.info(
+                f"[RAG][trace={trace_id}] rerank disabled, threshold skipped because "
+                f"RRF score is not a relevance score; reason={rerank_reason}"
+            )
+            results = finalize_rrf(candidates, top_k)
+            timings["rerank_input_count"] = 0
+            timings["rerank_output_count"] = 0
+            timings["threshold_passed_count"] = len(results)
+            timings["final_result_count"] = len(results)
+
+        # 每条结果记 trace（不记正文）
+        for c in results:
+            logger.info(
+                f"[RAG][trace={trace_id}] result doc={c.document_id} chunk={c.chunk_id} | "
+                f"vector_rank={c.vector_rank} bm25_rank={c.bm25_rank} | "
+                f"rrf_score={c.rrf_score} rrf_rank={c.rrf_rank} | "
+                f"rerank_score={c.rerank_score} final_rank={c.final_rank} score_type={c.score_type}"
+            )
+
         timings["retrieval_total_ms"] = (
             int(timings["vector_sql_ms"]) + int(timings["bm25_ms"]) + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
         )
-        logger.info(f"[RAG] Hybrid完成，返回{len(retrieved)}条, timings={timings}")
-        return (retrieved, timings) if return_timings else retrieved
+        logger.info(f"[RAG][trace={trace_id}] Hybrid完成，返回{len(results)}条")
+        return (results, timings) if return_timings else results
+
+    async def _run_rerank(
+        self,
+        kb_id: str,
+        query_text: str,
+        candidates: list[RetrievedChunk],
+        actual_candidate_k: int,
+        timings: dict[str, object],
+    ) -> list[tuple[int, Optional[float]]] | None:
+        """调用 Reranker 精排, 返回 [(输入序号, rerank_score), ...]（按重排后顺序）。
+
+        通过「输入序号」映射回候选块, 禁止 content 文本匹配。
+        失败/空结果时返回 None, 由调用方降级为 RRF 路径。
+        """
+        rerank_candidates = candidates[:actual_candidate_k]
+        candidate_ids = [c.chunk_id for c in rerank_candidates]
+        normalized_query = self._normalize_query(query_text or "search")
+        cache_key = self._build_rerank_cache_key(
+            kb_id=kb_id,
+            normalized_query=normalized_query,
+            candidate_ids=candidate_ids,
+            candidate_k=actual_candidate_k,
+        )
+        try:
+            cached = _rerank_cache.get(cache_key)
+        except Exception as e:
+            cached = None
+            logger.warning(f"[RAG] 读取Rerank缓存失败: {e}")
+
+        if cached:
+            try:
+                cached_list = json.loads(cached)
+                cached_map = {c.chunk_id: c for c in rerank_candidates}
+                ordered: list[tuple[int, Optional[float]]] = []
+                for entry in cached_list:
+                    cid = entry.get("id")
+                    c = cached_map.get(cid)
+                    if c is None:
+                        continue
+                    idx = rerank_candidates.index(c)
+                    ordered.append((idx, entry.get("score")))
+                if len(ordered) == len(rerank_candidates):
+                    timings["rerank_cache_hit"] = True
+                    return ordered
+            except Exception as e:
+                logger.warning(f"[RAG] 解析Rerank缓存失败: {e}")
+
+        try:
+            from core.rag.ranker import Reranker as RerankClient
+
+            reranker = RerankClient()
+            chunk_dicts = [{"content": c.content, "score": c.score} for c in rerank_candidates]
+            t_stage = time.time()
+            rerank_output = await asyncio.to_thread(
+                reranker.rerank,
+                query_text or "search",
+                chunk_dicts,
+                actual_candidate_k,
+                True,
+            )
+            timings["rerank_ms"] = int((time.time() - t_stage) * 1000)
+            if not rerank_output:
+                timings["rerank_reason"] = "rerank_failed_fallback"
+                timings["rerank_error"] = "empty_rerank_result"
+                logger.warning("[RAG] Rerank 返回空, 降级为 RRF 路径")
+                return None
+
+            pairs: list[tuple[int, Optional[float]]] = []
+            for rc in rerank_output:
+                idx = int(rc.get("index", -1))
+                if idx < 0 or idx >= len(rerank_candidates):
+                    continue
+                score = rc.get("rerank_score")
+                if score is None or not isinstance(score, (int, float)) or math.isnan(score) or math.isinf(score):
+                    logger.warning(
+                        f"[RAG] Rerank 结果 score 非法(chunk={rerank_candidates[idx].chunk_id}, "
+                        f"score={score}), 标记跳过"
+                    )
+                pairs.append((idx, float(score) if score is not None else None))
+            if not pairs:
+                timings["rerank_reason"] = "rerank_failed_fallback"
+                timings["rerank_error"] = "rerank_mapping_empty"
+                return None
+            try:
+                _rerank_cache.setex(
+                    cache_key,
+                    settings.rerank_cache_ttl_sec,
+                    json.dumps([
+                        {"id": rerank_candidates[idx].chunk_id, "score": s}
+                        for idx, s in pairs
+                    ]),
+                )
+            except Exception as e:
+                logger.warning(f"[RAG] 写入Rerank缓存失败: {e}")
+            return pairs
+        except Exception as e:
+            timings["rerank_reason"] = "rerank_failed_fallback"
+            timings["rerank_error"] = str(e)[:300]
+            logger.warning(f"[RAG] Rerank失败: {e}")
+            return None
 
     async def similarity_search_by_text(
         self,

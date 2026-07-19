@@ -104,6 +104,7 @@ async def retrieve_chat_context(
                 "document_id": c.document_id,
                 "document_title": c.document_title,
                 "score": c.score,
+                "score_type": c.score_type,
                 "rank": c.rank,
             })
             result.chunks_data.append({
