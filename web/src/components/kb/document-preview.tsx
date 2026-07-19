@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { SearchIcon, XIcon } from "lucide-react";
+import { ArrowLeftToLineIcon, SearchIcon, XIcon } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { MarkdownRenderer } from "@/components/ui/markdown";
@@ -47,8 +48,6 @@ function clearHighlights(container: HTMLElement) {
 function findChunkAnchor(container: HTMLElement, chunk: Chunk): HTMLElement | null {
   const raw = (chunk.content || "").trim();
   if (!raw) return null;
-
-  // 1) 优先用 section_title 找对应的 h1-h6
   if (chunk.section_title) {
     const title = chunk.section_title.trim();
     const headings = container.querySelectorAll("h1, h2, h3, h4, h5, h6");
@@ -56,15 +55,12 @@ function findChunkAnchor(container: HTMLElement, chunk: Chunk): HTMLElement | nu
       if ((h.textContent || "").trim() === title) return h as HTMLElement;
     }
   }
-
-  // 2) 用 content 第一行非空（去掉 # * 等 markdown 标记）做片段匹配
   const candidates = raw
     .split("\n")
     .map((line) => line.replace(/^#+\s*/, "").replace(/^[*+\-]\s+/, "").trim())
     .filter((line) => line.length >= 4);
   const anchorText = candidates[0] || raw.replace(/^#+\s*/, "").slice(0, 30);
   if (anchorText.length < 2) return null;
-
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
@@ -130,19 +126,22 @@ export function DocumentPreview({
 }: DocumentPreviewProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [renderKey, setRenderKey] = useState(0);
+  // 完整原文 / 当前 chunk 切换
+  const [showFull, setShowFull] = useState(false);
 
   useEffect(() => {
     setRenderKey((k) => k + 1);
-  }, [content, selectedChunk, keyword]);
+  }, [content, selectedChunk, keyword, showFull]);
 
+  // 完整模式：定位 chunk 在原文中的锚点并高亮
   useEffect(() => {
     const container = scrollRef.current;
-    if (!container || !content) return;
+    if (!container) return;
 
     clearHighlights(container);
     clearTextHighlights(container);
 
-    if (selectedChunk) {
+    if (showFull && content && selectedChunk) {
       const block = findChunkAnchor(container, selectedChunk);
       if (block) {
         applyChunkHighlight(block);
@@ -153,7 +152,39 @@ export function DocumentPreview({
     if (keyword.trim()) {
       highlightTextInElement(container, keyword.trim());
     }
-  }, [renderKey, content, selectedChunk, keyword]);
+  }, [renderKey, content, selectedChunk, keyword, showFull]);
+
+  const renderChunkView = (chunk: Chunk) => (
+    <div className="p-5 text-sm leading-7" ref={scrollRef}>
+      {chunk.section_title && (
+        <h2 className="mb-3 text-base font-semibold text-foreground">{chunk.section_title}</h2>
+      )}
+      <div className="whitespace-pre-wrap rounded-md border border-blue-400/40 bg-blue-50/40 p-4 text-foreground dark:border-blue-500/30 dark:bg-blue-900/15">
+        {chunk.content}
+      </div>
+      <div className="mt-3 text-xs text-muted-foreground">
+        字符 {chunk.character_count ?? "—"} · Token {chunk.token_count ?? "—"}
+        {chunk.page_number ? ` · 第 ${chunk.page_number} 页` : ""} · 状态 {chunk.vector_status}
+      </div>
+    </div>
+  );
+
+  const renderFullView = () => (
+    <div
+      className="p-4 text-sm leading-7"
+      ref={scrollRef}
+      onClick={(e) => {
+        if (!onSelectBlock) return;
+        const block = closestBlock(e.target as Node);
+        if (!block) return;
+        const text = (block.textContent || "").trim();
+        if (text.length >= 2) onSelectBlock(text);
+      }}
+      style={onSelectBlock ? { cursor: "pointer" } : undefined}
+    >
+      <MarkdownRenderer content={content || ""} />
+    </div>
+  );
 
   const renderBody = () => {
     if (isLoading) {
@@ -174,6 +205,11 @@ export function DocumentPreview({
       );
     }
 
+    // 有选中的 chunk 且未切到完整模式 → 显示 chunk 内容
+    if (!showFull && selectedChunk) {
+      return renderChunkView(selectedChunk);
+    }
+
     if (!content) {
       return (
         <div className="flex flex-col items-center justify-center p-8 text-center text-sm text-muted-foreground">
@@ -182,35 +218,37 @@ export function DocumentPreview({
       );
     }
 
-    return (
-      <div
-        className="p-4 text-sm leading-7"
-        ref={scrollRef}
-        onClick={(e) => {
-          if (!onSelectBlock) return;
-          const block = closestBlock(e.target as Node);
-          if (!block) return;
-          const text = (block.textContent || "").trim();
-          if (text.length >= 2) onSelectBlock(text);
-        }}
-        style={onSelectBlock ? { cursor: "pointer" } : undefined}
-      >
-        <MarkdownRenderer content={content} />
-      </div>
-    );
+    return renderFullView();
   };
+
+  const showChunkView = !showFull && !!selectedChunk;
 
   return (
     <Card className="flex h-full flex-col overflow-hidden border-border/60 bg-background/80 shadow-sm">
       <CardHeader className="shrink-0 border-b px-4 py-3">
         <div className="flex items-center justify-between gap-3">
-          <CardTitle className="text-sm font-semibold">原文预览</CardTitle>
+          <div className="flex items-center gap-2">
+            <CardTitle className="text-sm font-semibold">
+              {showChunkView ? "当前 Chunk 预览" : "原文预览"}
+            </CardTitle>
+            {selectedChunk && (
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-7 px-2 text-xs"
+                onClick={() => setShowFull((s) => !s)}
+              >
+                <ArrowLeftToLineIcon className="mr-1 h-3.5 w-3.5" />
+                {showFull ? "返回 Chunk 视图" : "查看完整原文"}
+              </Button>
+            )}
+          </div>
           <div className="relative w-[180px]">
             <SearchIcon className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
             <input
               value={keyword}
               onChange={(e) => onKeywordChange(e.target.value)}
-              placeholder="搜索原文内容"
+              placeholder={showChunkView ? "搜索 chunk 内容" : "搜索原文内容"}
               className="h-8 w-full rounded-md border border-input bg-background/70 pl-8 pr-7 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
             />
             {keyword && (
