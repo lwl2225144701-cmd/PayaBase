@@ -17,7 +17,8 @@ interface DocumentPreviewProps {
   error?: Error | null;
 }
 
-const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "TD", "PRE", "DIV"]);
+// 注意：去掉 DIV，避免 closestBlock 抓到 MarkdownRenderer 的外层包装 div
+const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "TD", "PRE"]);
 
 function closestBlock(node: Node): HTMLElement | null {
   let el: HTMLElement | null = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node.parentElement;
@@ -25,7 +26,7 @@ function closestBlock(node: Node): HTMLElement | null {
     if (BLOCK_TAGS.has(el.tagName)) return el;
     el = el.parentElement;
   }
-  return el;
+  return null;
 }
 
 function clearHighlights(container: HTMLElement) {
@@ -173,7 +174,7 @@ export function DocumentPreview({
           const block = closestBlock(e.target as Node);
           if (!block) return;
           const text = (block.textContent || "").trim();
-          if (text.length >= 4) onSelectBlock(text);
+          if (text.length >= 2) onSelectBlock(text);
         }}
         style={onSelectBlock ? { cursor: "pointer" } : undefined}
       >

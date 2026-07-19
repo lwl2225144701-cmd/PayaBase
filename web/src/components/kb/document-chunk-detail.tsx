@@ -286,8 +286,10 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
                   keyword={previewKeyword}
                   onKeywordChange={setPreviewKeyword}
                   onSelectBlock={(text) => {
-                    // 点击左侧原文某段：找第一个 content 包含该段文本的 chunk 并切换
-                    const found = chunks.find((c) => c.content.includes(text));
+                    // 点击左侧原文某段：截前 20 字符做匹配，避免段太长 includes 失败
+                    const key = text.trim().slice(0, 20);
+                    if (!key) return;
+                    const found = chunks.find((c) => c.content.includes(key));
                     if (found) setSelectedChunk(found);
                   }}
                   isLoading={contentLoading}
