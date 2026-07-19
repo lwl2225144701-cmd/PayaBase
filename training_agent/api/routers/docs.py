@@ -59,7 +59,11 @@ def _extract_text(file_data: bytes, file_ext: str) -> str:
         return file_data.decode("utf-8", errors="replace")
 
 
-def _document_response(doc: Document, status_override: str | None = None) -> DocumentResponse:
+def _document_response(
+    doc: Document,
+    status_override: str | None = None,
+    chunk_count: int | None = None,
+) -> DocumentResponse:
     return DocumentResponse(
         id=str(doc.id),
         knowledge_base_id=str(doc.knowledge_base_id),
@@ -72,6 +76,7 @@ def _document_response(doc: Document, status_override: str | None = None) -> Doc
         source_url=doc.source_url,
         indexed_at=doc.indexed_at,
         created_at=doc.created_at,
+        chunk_count=chunk_count if chunk_count is not None else (doc.chunk_count or 0),
     )
 
 
@@ -197,7 +202,9 @@ async def get_document(
     if not doc or doc.knowledge_base_id != kb.id:
         raise NotFoundException("Document not found")
 
-    return Response(data=_document_response(doc))
+    # 切片数量走实时 count，避免与 /chunks 接口的 total 不一致
+    chunk_count = await ChunkRepositoryImpl(db).count_by_document(doc.id)
+    return Response(data=_document_response(doc, chunk_count=chunk_count))
 
 
 @router.get("/{doc_id}/content", response_model=Response[DocumentContentResponse])

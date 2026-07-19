@@ -24,6 +24,7 @@ class DocumentResponse(BaseModel):
     status: str
     source_type: str = "local"
     source_url: Optional[str] = None
+    chunk_count: int = 0
     indexed_at: Optional[datetime] = None
     created_at: datetime
 

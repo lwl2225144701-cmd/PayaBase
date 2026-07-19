@@ -240,11 +240,12 @@ class ChunkRepositoryImpl:
                 )
             )
 
+        # 用 func.count() 避免引用外层 Chunk.id 造成与 subquery 的笛卡尔积
         total = (
             await self.session.execute(
-                select(func.count(Chunk.id)).select_from(base_stmt.subquery())
+                select(func.count()).select_from(base_stmt.subquery())
             )
-        ).scalar_one_or_none() or 0
+        ).scalar_one() or 0
 
         stmt = base_stmt.order_by(Chunk.id.asc()).offset((page - 1) * page_size).limit(page_size)
         result = await self.session.execute(stmt)
