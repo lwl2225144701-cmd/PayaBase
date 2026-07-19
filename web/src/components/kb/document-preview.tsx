@@ -12,6 +12,7 @@ interface DocumentPreviewProps {
   selectedChunk: Chunk | undefined;
   keyword: string;
   onKeywordChange: (keyword: string) => void;
+  onSelectBlock?: (text: string) => void;
   isLoading?: boolean;
   error?: Error | null;
 }
@@ -105,6 +106,7 @@ export function DocumentPreview({
   selectedChunk,
   keyword,
   onKeywordChange,
+  onSelectBlock,
   isLoading,
   error,
 }: DocumentPreviewProps) {
@@ -163,7 +165,18 @@ export function DocumentPreview({
     }
 
     return (
-      <div className="p-4 text-sm leading-7" ref={scrollRef}>
+      <div
+        className="p-4 text-sm leading-7"
+        ref={scrollRef}
+        onClick={(e) => {
+          if (!onSelectBlock) return;
+          const block = closestBlock(e.target as Node);
+          if (!block) return;
+          const text = (block.textContent || "").trim();
+          if (text.length >= 4) onSelectBlock(text);
+        }}
+        style={onSelectBlock ? { cursor: "pointer" } : undefined}
+      >
         <MarkdownRenderer content={content} />
       </div>
     );

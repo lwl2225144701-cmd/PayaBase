@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { SearchIcon, XIcon, ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -53,6 +54,15 @@ export function ChunkList({
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const startIndex = (page - 1) * pageSize;
   const endIndex = Math.min(startIndex + pageSize, total);
+
+  // 选中切片变化时，把对应卡片滚到视口里
+  useEffect(() => {
+    if (!selectedChunkId) return;
+    const el = document.querySelector<HTMLElement>(`[data-chunk-id="${CSS.escape(selectedChunkId)}"]`);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+  }, [selectedChunkId, page]);
 
   const renderBody = () => {
     if (isLoading) {

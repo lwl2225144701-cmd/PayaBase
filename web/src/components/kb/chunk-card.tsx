@@ -55,6 +55,7 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
 
   return (
     <div
+      data-chunk-id={chunk.chunk_id}
       className={`rounded-lg border bg-background p-4 transition-colors ${
         isSelected
           ? "border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20"
