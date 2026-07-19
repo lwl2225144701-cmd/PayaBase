@@ -44,10 +44,15 @@ function statusBadge(status: string) {
   );
 }
 
+function formatPage(n: number | undefined | null): string {
+  if (n === undefined || n === null) return "—";
+  return `第 ${n} 页`;
+}
+
 export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCardProps) {
   const [expanded, setExpanded] = useState(false);
   const [showMetadata, setShowMetadata] = useState(false);
-  const previewLength = 180;
+  const previewLength = 280;
   const needsExpand = chunk.content.length > previewLength;
   const displayContent = expanded ? chunk.content : chunk.content.slice(0, previewLength) + (needsExpand ? "…" : "");
 
@@ -55,7 +60,7 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
     <div
       className={`rounded-lg border bg-background p-4 transition-colors ${
         isSelected
-          ? "border-primary/40 bg-primary/[0.03] ring-1 ring-primary/20"
+          ? "border-primary/50 bg-primary/[0.03] ring-1 ring-primary/20"
           : "border-border/60 hover:border-primary/30 hover:bg-muted/20"
       }`}
       onClick={() => onSelect(chunk)}
@@ -66,31 +71,30 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
       }}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 text-xs font-semibold text-primary">
-            {String(index + 1).padStart(3, "0")}
+        <div className="flex min-w-0 flex-1 items-center gap-3">
+          <span className="flex h-7 shrink-0 items-center rounded-md bg-primary/10 px-2 text-xs font-semibold text-primary">
+            Chunk {String(index + 1).padStart(3, "0")}
           </span>
           <span className="truncate text-xs text-muted-foreground" title={chunk.chunk_id}>
             {chunk.chunk_id}
           </span>
         </div>
-        {statusBadge(chunk.vector_status)}
       </div>
 
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
-        <span>字符：{chunk.character_count ?? "—"}</span>
-        <span>Token：{chunk.token_count ?? "—"}</span>
-        <span>页码：{chunk.page_number ?? "—"}</span>
-        {chunk.section_title && (
-          <span className="truncate max-w-[160px]" title={chunk.section_title}>
-            {chunk.section_title}
-          </span>
-        )}
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>字符 {chunk.character_count ?? "—"}</span>
+        <span className="text-border">·</span>
+        <span>Token {chunk.token_count ?? "—"}</span>
+        <span className="text-border">·</span>
+        <span>页码 {formatPage(chunk.page_number)}</span>
+        <span className="text-border">·</span>
+        <span className="flex items-center gap-1">
+          状态
+          {statusBadge(chunk.vector_status)}
+        </span>
       </div>
 
-      <div className="mt-3 text-sm leading-6 text-foreground">
-        {displayContent}
-      </div>
+      <div className="mt-3 text-sm leading-6 text-foreground">{displayContent}</div>
 
       <div className="mt-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-1">

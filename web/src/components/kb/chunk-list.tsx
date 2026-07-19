@@ -11,7 +11,6 @@ const STATUS_OPTIONS = [
   { value: "all", label: "全部" },
   { value: "indexed", label: "已向量化" },
   { value: "error", label: "异常" },
-  { value: "pending", label: "待处理" },
 ];
 
 interface ChunkListProps {
@@ -131,7 +130,7 @@ export function ChunkList({
               <input
                 value={keyword}
                 onChange={(e) => onKeywordChange(e.target.value)}
-                placeholder="搜索 chunk 内容 / ID / 章节"
+                placeholder="搜索 chunk 内容 / chunk_id"
                 className="h-8 w-full rounded-md border border-input bg-background/70 pl-8 pr-7 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
               />
               {keyword && (

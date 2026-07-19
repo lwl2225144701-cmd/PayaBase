@@ -16,13 +16,63 @@ interface DocumentPreviewProps {
   error?: Error | null;
 }
 
-function highlightTextInElement(container: HTMLElement, text: string, className: string): HTMLElement | null {
+const BLOCK_TAGS = new Set(["P", "H1", "H2", "H3", "H4", "H5", "H6", "LI", "BLOCKQUOTE", "TD", "PRE", "DIV"]);
+
+function closestBlock(node: Node): HTMLElement | null {
+  let el: HTMLElement | null = node.nodeType === Node.ELEMENT_NODE ? (node as HTMLElement) : node.parentElement;
+  while (el && el !== document.body) {
+    if (BLOCK_TAGS.has(el.tagName)) return el;
+    el = el.parentElement;
+  }
+  return el;
+}
+
+function clearHighlights(container: HTMLElement) {
+  const marks = container.querySelectorAll('[data-chunk-highlight="true"]');
+  marks.forEach((mark) => {
+    mark.classList.remove(
+      "rounded-md",
+      "border",
+      "border-blue-400/60",
+      "bg-blue-50/60",
+      "dark:border-blue-500/50",
+      "dark:bg-blue-900/20"
+    );
+    mark.removeAttribute("data-chunk-highlight");
+  });
+}
+
+function highlightChunkInElement(container: HTMLElement, text: string): HTMLElement | null {
   if (!text) return null;
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
-  const nodes: Text[] = [];
   while (walker.nextNode()) {
-    nodes.push(walker.currentNode as Text);
+    const node = walker.currentNode as Text;
+    const content = node.textContent || "";
+    const index = content.indexOf(text);
+    if (index !== -1) {
+      const block = closestBlock(node);
+      if (block) {
+        block.classList.add(
+          "rounded-md",
+          "border",
+          "border-blue-400/60",
+          "bg-blue-50/60",
+          "dark:border-blue-500/50",
+          "dark:bg-blue-900/20"
+        );
+        block.dataset.chunkHighlight = "true";
+        return block;
+      }
+    }
   }
+  return null;
+}
+
+function highlightTextInElement(container: HTMLElement, text: string): void {
+  if (!text) return;
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
+  const nodes: Text[] = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode as Text);
   for (const node of nodes) {
     const content = node.textContent || "";
     const index = content.indexOf(text);
@@ -31,23 +81,20 @@ function highlightTextInElement(container: HTMLElement, text: string, className:
       range.setStart(node, index);
       range.setEnd(node, index + text.length);
       const mark = document.createElement("mark");
-      mark.className = className;
+      mark.className = "rounded-sm bg-yellow-100 px-0.5 py-0.5 text-yellow-900 dark:bg-yellow-900/40 dark:text-yellow-100";
       mark.dataset.highlight = "true";
       range.surroundContents(mark);
-      return mark;
+      return;
     }
   }
-  return null;
 }
 
-function clearHighlights(container: HTMLElement) {
+function clearTextHighlights(container: HTMLElement) {
   const marks = container.querySelectorAll('[data-highlight="true"]');
   marks.forEach((mark) => {
     const parent = mark.parentNode;
     if (!parent) return;
-    while (mark.firstChild) {
-      parent.insertBefore(mark.firstChild, mark);
-    }
+    while (mark.firstChild) parent.insertBefore(mark.firstChild, mark);
     parent.removeChild(mark);
     parent.normalize();
   });
@@ -64,7 +111,6 @@ export function DocumentPreview({
   const scrollRef = useRef<HTMLDivElement>(null);
   const [renderKey, setRenderKey] = useState(0);
 
-  // 每次 content 或 selectedChunk 变化时重新触发高亮
   useEffect(() => {
     setRenderKey((k) => k + 1);
   }, [content, selectedChunk, keyword]);
@@ -74,24 +120,18 @@ export function DocumentPreview({
     if (!container || !content) return;
 
     clearHighlights(container);
+    clearTextHighlights(container);
 
-    // 1. 高亮选中切片
     if (selectedChunk?.content) {
-      // 优先使用 chunk 内容在原文中首次匹配；后端有 start_offset/end_offset 时效果一致
-      const mark = highlightTextInElement(
-        container,
-        selectedChunk.content.slice(0, 200),
-        "rounded-sm bg-primary/15 px-0.5 py-0.5 ring-1 ring-primary/30"
-      );
-      if (mark) {
-        mark.scrollIntoView({ behavior: "smooth", block: "center" });
+      const targetText = selectedChunk.content.slice(0, 200).trim();
+      const block = highlightChunkInElement(container, targetText);
+      if (block) {
+        block.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
 
-    // 2. 高亮搜索关键词
     if (keyword.trim()) {
-      const q = keyword.trim();
-      highlightTextInElement(container, q, "rounded-sm bg-yellow-100 px-0.5 py-0.5 text-yellow-900");
+      highlightTextInElement(container, keyword.trim());
     }
   }, [renderKey, content, selectedChunk, keyword]);
 
@@ -139,7 +179,7 @@ export function DocumentPreview({
             <input
               value={keyword}
               onChange={(e) => onKeywordChange(e.target.value)}
-              placeholder="搜索原文"
+              placeholder="搜索原文内容"
               className="h-8 w-full rounded-md border border-input bg-background/70 pl-8 pr-7 text-xs outline-none transition-colors placeholder:text-muted-foreground focus:border-primary/40 focus:ring-1 focus:ring-primary/20"
             />
             {keyword && (

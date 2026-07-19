@@ -48,6 +48,7 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
   const { data: content, isLoading: contentLoading, error: contentError } = useDocumentContent(kbId, documentId);
 
   const [keyword, setKeyword] = useState("");
+  const [previewKeyword, setPreviewKeyword] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(10);
@@ -255,12 +256,12 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
           ) : (
             <>
               <DocumentSummaryCard document={document} isLoading={docLoading} />
-              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1fr_1.5fr]">
+              <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[1.6fr_1fr]">
                 <DocumentPreview
                   content={content}
                   selectedChunk={selectedChunk}
-                  keyword=""
-                  onKeywordChange={() => {}}
+                  keyword={previewKeyword}
+                  onKeywordChange={setPreviewKeyword}
                   isLoading={contentLoading}
                   error={contentError}
                 />

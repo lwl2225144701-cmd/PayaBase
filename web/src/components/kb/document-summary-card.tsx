@@ -35,6 +35,15 @@ interface DocumentSummaryCardProps {
   isLoading?: boolean;
 }
 
+function InfoItem({ label, value }: { label: string; value: React.ReactNode }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-foreground">{value}</span>
+    </div>
+  );
+}
+
 export function DocumentSummaryCard({ document, isLoading }: DocumentSummaryCardProps) {
   if (isLoading || !document) {
     return (
@@ -58,43 +67,41 @@ export function DocumentSummaryCard({ document, isLoading }: DocumentSummaryCard
   return (
     <Card className="border-border/60 bg-background/80 shadow-sm">
       <CardContent className="p-5">
-        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div className="flex min-w-0 items-start gap-4">
+        <div className="flex flex-col gap-5 sm:flex-row sm:items-center">
+          <div className="flex min-w-0 items-center gap-4">
             <div className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-lg border ${fileTypeTheme(document.file_type)}`}>
               <FileIcon className="h-5 w-5" />
             </div>
-            <div className="min-w-0 flex-1">
+            <div className="min-w-0">
               <h2 className="truncate text-base font-semibold leading-snug" title={document.title}>
                 {document.title}
               </h2>
-              <div className="mt-1.5 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-                <span className="rounded-md bg-muted/50 px-2 py-0.5">{fileType}</span>
-                <span>大小：{formatBytes(document.file_size)}</span>
-                <span>上传时间：{formatDate(document.created_at)}</span>
-              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">{document.file_type || "—"}</p>
             </div>
           </div>
-          <div className="flex flex-wrap items-center gap-2 sm:justify-end">
-            <div className="text-xs text-muted-foreground">
-              分段策略：<span className="font-medium text-foreground">{document.strategy || "通用"}</span>
+
+          <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-6">
+            <InfoItem label="大小" value={formatBytes(document.file_size)} />
+            <InfoItem label="上传时间" value={formatDate(document.created_at)} />
+            <InfoItem label="分段策略" value={document.strategy || "通用"} />
+            <InfoItem label="切片数量" value={`${document.chunk_count ?? 0} chunks`} />
+            <div className="flex flex-col gap-1">
+              <span className="text-xs text-muted-foreground">状态</span>
+              <Badge
+                variant="outline"
+                className={`w-fit rounded-md px-2 py-0.5 text-xs font-normal ${
+                  document.status === "ready"
+                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-400"
+                    : document.status === "error"
+                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400"
+                    : document.status === "indexing"
+                    ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/50 dark:bg-blue-950/40 dark:text-blue-400"
+                    : ""
+                }`}
+              >
+                {statusText}
+              </Badge>
             </div>
-            <div className="text-xs text-muted-foreground">
-              切片数量：<span className="font-medium text-foreground">{document.chunk_count ?? 0} chunks</span>
-            </div>
-            <Badge
-              variant="outline"
-              className={`rounded-md px-2 py-0.5 text-xs font-normal ${
-                document.status === "ready"
-                  ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-400"
-                  : document.status === "error"
-                  ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400"
-                  : document.status === "indexing"
-                  ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/50 dark:bg-blue-950/40 dark:text-blue-400"
-                  : ""
-              }`}
-            >
-              {statusText}
-            </Badge>
           </div>
         </div>
       </CardContent>
