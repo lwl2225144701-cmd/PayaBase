@@ -44,30 +44,47 @@ function clearHighlights(container: HTMLElement) {
   });
 }
 
-function highlightChunkInElement(container: HTMLElement, text: string): HTMLElement | null {
-  if (!text) return null;
+function findChunkAnchor(container: HTMLElement, chunk: Chunk): HTMLElement | null {
+  const raw = (chunk.content || "").trim();
+  if (!raw) return null;
+
+  // 1) 优先用 section_title 找对应的 h1-h6
+  if (chunk.section_title) {
+    const title = chunk.section_title.trim();
+    const headings = container.querySelectorAll("h1, h2, h3, h4, h5, h6");
+    for (const h of Array.from(headings)) {
+      if ((h.textContent || "").trim() === title) return h as HTMLElement;
+    }
+  }
+
+  // 2) 用 content 第一行非空（去掉 # * 等 markdown 标记）做片段匹配
+  const candidates = raw
+    .split("\n")
+    .map((line) => line.replace(/^#+\s*/, "").replace(/^[*+\-]\s+/, "").trim())
+    .filter((line) => line.length >= 4);
+  const anchorText = candidates[0] || raw.replace(/^#+\s*/, "").slice(0, 30);
+  if (anchorText.length < 2) return null;
+
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null);
   while (walker.nextNode()) {
     const node = walker.currentNode as Text;
-    const content = node.textContent || "";
-    const index = content.indexOf(text);
-    if (index !== -1) {
-      const block = closestBlock(node);
-      if (block) {
-        block.classList.add(
-          "rounded-md",
-          "border",
-          "border-blue-400/60",
-          "bg-blue-50/60",
-          "dark:border-blue-500/50",
-          "dark:bg-blue-900/20"
-        );
-        block.dataset.chunkHighlight = "true";
-        return block;
-      }
+    if ((node.textContent || "").includes(anchorText)) {
+      return closestBlock(node);
     }
   }
   return null;
+}
+
+function applyChunkHighlight(block: HTMLElement) {
+  block.classList.add(
+    "rounded-md",
+    "border",
+    "border-blue-400/60",
+    "bg-blue-50/60",
+    "dark:border-blue-500/50",
+    "dark:bg-blue-900/20"
+  );
+  block.dataset.chunkHighlight = "true";
 }
 
 function highlightTextInElement(container: HTMLElement, text: string): void {
@@ -125,10 +142,10 @@ export function DocumentPreview({
     clearHighlights(container);
     clearTextHighlights(container);
 
-    if (selectedChunk?.content) {
-      const targetText = selectedChunk.content.slice(0, 200).trim();
-      const block = highlightChunkInElement(container, targetText);
+    if (selectedChunk) {
+      const block = findChunkAnchor(container, selectedChunk);
       if (block) {
+        applyChunkHighlight(block);
         block.scrollIntoView({ behavior: "smooth", block: "center" });
       }
     }
