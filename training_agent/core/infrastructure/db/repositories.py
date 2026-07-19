@@ -14,7 +14,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import String, delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from core.domain.knowledge_base.aggregates import DocumentStatus
@@ -211,6 +211,44 @@ class ChunkRepositoryImpl:
             select(Chunk).where(Chunk.document_id == document_id)
         )
         return list(result.scalars().all())
+
+    async def list_by_document_paginated(
+        self,
+        document_id: UUID,
+        page: int = 1,
+        page_size: int = 20,
+        q: str | None = None,
+        status: str | None = None,
+    ) -> tuple[list[Chunk], int]:
+        """分页查询文档切片，支持状态过滤与关键词（内容 / section_title / chunk_id）搜索。"""
+        base_stmt = select(Chunk).where(Chunk.document_id == document_id)
+
+        if status == "indexed":
+            base_stmt = base_stmt.where(Chunk.vector.is_not(None))
+        elif status == "pending":
+            base_stmt = base_stmt.where(Chunk.vector.is_(None))
+        elif status == "error":
+            # 当前 schema 未单独记录 chunk 级 error，返回空集
+            return [], 0
+
+        if q:
+            like_q = f"%{q}%"
+            base_stmt = base_stmt.where(
+                or_(
+                    Chunk.content.ilike(like_q),
+                    func.cast(Chunk.meta, String).ilike(like_q),
+                )
+            )
+
+        total = (
+            await self.session.execute(
+                select(func.count(Chunk.id)).select_from(base_stmt.subquery())
+            )
+        ).scalar_one_or_none() or 0
+
+        stmt = base_stmt.order_by(Chunk.id.asc()).offset((page - 1) * page_size).limit(page_size)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all()), total
 
     async def batch_replace(self, document_id: UUID, chunks: list[dict]) -> int:
         """幂等替换：先删旧 chunk 再批量插入。不 commit（由 UoW 管）。

@@ -1,4 +1,7 @@
+import io
 import logging
+import os
+import tempfile
 import uuid
 
 from fastapi import APIRouter, Query, UploadFile
@@ -6,24 +9,54 @@ from fastapi import APIRouter, Query, UploadFile
 from api.deps import CurrentUser, DBSession
 from api.schemas.common import Response
 from api.schemas.doc import (
+    ChunkPageResponse,
+    ChunkResponse,
+    DocumentContentResponse,
     DocumentFromSourceRequest,
     DocumentListResponse,
     DocumentPageResponse,
     DocumentResponse,
 )
 from core.application.documents import ImportDocumentUseCase
+from core.config import settings
 from core.domain.knowledge_base.aggregates import Document as DomainDocument
 from core.exceptions import NotFoundException
 from core.infrastructure.db.repositories import (
     ChunkRepositoryImpl,
     DocumentRepositoryImpl,
 )
+from core.infrastructure.minio.client import get_minio_client
 from core.permissions import require_visible_kb
 from models.tables import Document
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _extract_text(file_data: bytes, file_ext: str) -> str:
+    """从原始文件字节提取可预览文本（用于文档切片详情页）。"""
+    file_ext = file_ext.lower().lstrip(".")
+    if file_ext == "pdf":
+        from pypdf import PdfReader
+
+        reader = PdfReader(io.BytesIO(file_data))
+        return "\n".join(page.extract_text() or "" for page in reader.pages)
+    elif file_ext in ("md", "txt"):
+        return file_data.decode("utf-8", errors="replace")
+    elif file_ext in ("docx",):
+        from docx import Document as DocxDocument
+
+        with tempfile.NamedTemporaryFile(suffix=".docx", delete=False) as tmp:
+            tmp.write(file_data)
+            tmp_path = tmp.name
+        try:
+            doc = DocxDocument(tmp_path)
+            return "\n".join(p.text for p in doc.paragraphs)
+        finally:
+            os.unlink(tmp_path)
+    else:
+        return file_data.decode("utf-8", errors="replace")
 
 
 def _document_response(doc: Document, status_override: str | None = None) -> DocumentResponse:
@@ -165,6 +198,89 @@ async def get_document(
         raise NotFoundException("Document not found")
 
     return Response(data=_document_response(doc))
+
+
+@router.get("/{doc_id}/content", response_model=Response[DocumentContentResponse])
+async def get_document_content(
+    kb_id: str,
+    doc_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+):
+    """文档原文（提取文本）预览接口。"""
+    kb = await require_visible_kb(db, current_user, uuid.UUID(kb_id))
+    doc = await DocumentRepositoryImpl(db).get_by_id(uuid.UUID(doc_id))
+    if not doc or doc.knowledge_base_id != kb.id:
+        raise NotFoundException("Document not found")
+
+    try:
+        minio_client = get_minio_client()
+        response = minio_client.get_object(settings.minio_bucket, doc.file_path)
+        file_data = response.read()
+    except Exception as e:
+        logger.warning(f"[DocumentContent] 读取 MinIO 失败: {doc.file_path}, error={e}")
+        raise NotFoundException("Document content not available") from e
+
+    text = _extract_text(file_data, doc.file_type)
+    return Response(data=DocumentContentResponse(content=text))
+
+
+@router.get("/{doc_id}/chunks", response_model=Response[ChunkPageResponse])
+async def list_document_chunks(
+    kb_id: str,
+    doc_id: str,
+    db: DBSession,
+    current_user: CurrentUser,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(10, ge=1, le=100),
+    q: str | None = Query(None, description="按内容 / section_title / chunk_id 搜索"),
+    status: str | None = Query(None, description="切片状态: indexed / pending / error"),
+):
+    """文档切片分页列表接口。"""
+    kb = await require_visible_kb(db, current_user, uuid.UUID(kb_id))
+    doc = await DocumentRepositoryImpl(db).get_by_id(uuid.UUID(doc_id))
+    if not doc or doc.knowledge_base_id != kb.id:
+        raise NotFoundException("Document not found")
+
+    chunks, total = await ChunkRepositoryImpl(db).list_by_document_paginated(
+        doc.id,
+        page=page,
+        page_size=page_size,
+        q=q,
+        status=status,
+    )
+
+    embedding_model = kb.embedding_model
+    items: list[ChunkResponse] = []
+    for chunk in chunks:
+        meta = chunk.meta or {}
+        items.append(
+            ChunkResponse(
+                id=str(chunk.id),
+                document_id=str(chunk.document_id),
+                chunk_id=meta.get("chunk_id") or str(chunk.id),
+                content=chunk.content,
+                section_title=meta.get("section_title"),
+                page_number=meta.get("page_number"),
+                start_offset=meta.get("start_offset"),
+                end_offset=meta.get("end_offset"),
+                token_count=chunk.token_count or 0,
+                character_count=len(chunk.content),
+                vector_status="indexed" if chunk.vector is not None else "pending",
+                embedding_model=embedding_model,
+                created_at=None,
+                meta=meta,
+            )
+        )
+
+    return Response(
+        data=ChunkPageResponse(
+            items=items,
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+    )
 
 
 @router.post("/{doc_id}/reindex", response_model=Response[None])

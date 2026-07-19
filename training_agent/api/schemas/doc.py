@@ -60,11 +60,35 @@ class DocumentPageResponse(BaseModel):
     counts: DocumentStatusCounts
 
 
+class DocumentContentResponse(BaseModel):
+    """文档原文（Markdown / 提取文本）预览接口响应。"""
+
+    content: str
+
+
 class ChunkResponse(BaseModel):
     id: str
     document_id: str
+    chunk_id: str | None = None
     content: str
-    token_count: int
+    section_title: str | None = None
+    page_number: int | None = None
+    start_offset: int | None = None
+    end_offset: int | None = None
+    token_count: int = 0
+    character_count: int = 0
+    vector_status: str = "pending"  # indexed / pending / error
+    embedding_model: str | None = None
+    created_at: datetime | None = None
     meta: dict = {}
 
     model_config = {"from_attributes": True}
+
+
+class ChunkPageResponse(BaseModel):
+    """文档切片分页响应。"""
+
+    items: list[ChunkResponse]
+    total: int
+    page: int
+    page_size: int
