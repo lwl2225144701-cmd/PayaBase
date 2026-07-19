@@ -67,7 +67,7 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
         if (e.key === "Enter" || e.key === " ") onSelect(chunk);
       }}
     >
-      <div className="flex items-start justify-between gap-3">
+      <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <span className="flex h-7 shrink-0 items-center rounded-md bg-primary/10 px-2 text-xs font-semibold text-primary">
             Chunk {String(index + 1).padStart(3, "0")}
@@ -76,7 +76,7 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
             {chunk.chunk_id}
           </span>
         </div>
-        <div className="flex shrink-0 items-center gap-0.5">
+        <div className="flex shrink-0 flex-wrap items-center gap-0.5">
           <Link
             href={`/kb/${kbId}?tab=retrieval_test&document_id=${encodeURIComponent(chunk.document_id)}&chunk_id=${encodeURIComponent(chunk.chunk_id)}`}
             onClick={(e) => e.stopPropagation()}
