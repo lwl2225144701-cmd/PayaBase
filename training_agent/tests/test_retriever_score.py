@@ -8,12 +8,19 @@
 5. 两个 content 完全相同但 chunk_id 不同的块, 必须按 index 正确映射, 不相互覆盖。
 6. 全部低于 threshold 时返回空列表。
 7. rerank 关闭时 score_type=rrf, 不执行 threshold, 不展示百分比。
+
+补充(本轮):
+8. actual_candidate_k 不得受 final top_k 限制 —— RRF 候选全集(受 rerank_candidate_k 上限约束)
+   进入 rerank, 而非被 top_k 截断。
+9. 完整链路: RRF 前 20 条 → 全部经过 Rerank → threshold 过滤 → 最终取 Top5;
+   threshold_passed_count 统计 top_k 截取前的通过数。
 """
 
 from unittest.mock import MagicMock, patch
 
+from core.config import settings
 from core.rag.ranker import Reranker, _sigmoid
-from core.rag.retriever import RetrievedChunk, apply_rerank_scores, finalize_rrf
+from core.rag.retriever import RetrievedChunk, Retriever, apply_rerank_scores, finalize_rrf
 
 
 def _make(chunk_id, content="x", rrf_score=0.0, rrf_rank=1, document_id="d1"):
@@ -160,3 +167,110 @@ def test_sigmoid_monotonic_and_bounded():
     assert _sigmoid(100) > 0.99
     assert _sigmoid(-100) < 0.01
     assert _sigmoid(2.0) > _sigmoid(-1.0)
+
+
+# 8. actual_candidate_k 不得受 final top_k 限制 --------------------------------------
+def test_rrf_candidate_k_not_limited_by_top_k():
+    retriever = Retriever(db=MagicMock())
+    # 20 条 RRF 候选(排名 1..20)
+    candidates = [_make(f"c{i}", rrf_rank=i + 1) for i in range(20)]
+
+    # 放大 rerank_candidate_k 上限, 让 cap 不生效, 单独验证 top_k 不再参与限制
+    with patch.object(settings, "rerank_override", "on"), patch.object(
+        settings, "rerank_candidate_k", 30
+    ):
+        should, k, reason = retriever._decide_rerank(
+            query_text="具体的检索问题",
+            top_k=5,
+            candidates=candidates,
+            requested_use_rerank=True,
+        )
+
+    assert should is True
+    # 关键: actual_candidate_k 必须等于 RRF 候选全集(20), 不得被 final top_k=5 截断
+    assert k == 20
+    # 送入 rerank 的候选数 = min(k, len(candidates)) = 20, 即全部 RRF 候选
+    assert min(k, len(candidates)) == 20
+
+
+# 9. 完整链路: RRF 前20条 → 全部 Rerank → threshold → 最终 Top5 ------------------------
+def test_full_chain_rrf20_rerank_then_threshold_then_top5():
+    retriever = Retriever(db=MagicMock())
+    # 20 条 RRF 候选(排名 1..20)
+    candidates = [_make(f"c{i}", rrf_rank=i + 1) for i in range(20)]
+
+    # 模拟 _decide_rerank: 给出 actual_candidate_k=20(不被 top_k=5 限制)
+    with patch.object(settings, "rerank_override", "on"), patch.object(
+        settings, "rerank_candidate_k", 30
+    ):
+        should, k, _ = retriever._decide_rerank(
+            query_text="具体的检索问题",
+            top_k=5,
+            candidates=candidates,
+            requested_use_rerank=True,
+        )
+    assert should and k == 20
+
+    # 模拟 Reranker 对全部 20 条输出归一化 score: 前 12 条 >=0.5, 后 8 条 <0.5
+    high = [0.99, 0.95, 0.90, 0.88, 0.85, 0.82, 0.78, 0.75, 0.70, 0.65, 0.60, 0.55]
+    low = [0.45, 0.40, 0.35, 0.30, 0.25, 0.20, 0.15, 0.10]
+    scores = high + low  # 长度 20
+    pairs = [(i, scores[i]) for i in range(20)]
+
+    # 全部 20 条进入 rerank(actual_candidate_k=20, 不被 top_k=5 截断)
+    reranked_pairs = pairs[:k]
+    assert len(reranked_pairs) == 20
+
+    # rerank 之后再做 threshold, 最后截取 top5
+    results = apply_rerank_scores(candidates, reranked_pairs, threshold=0.5, top_k=5)
+
+    # 最终取 Top5: >=0.5 中分数最高的 5 条(0.99/0.95/0.90/0.88/0.85)
+    assert len(results) == 5
+    assert [round(c.rerank_score, 2) for c in results] == [0.99, 0.95, 0.90, 0.88, 0.85]
+    assert all(c.score_type == "rerank" for c in results)
+    assert [c.final_rank for c in results] == [1, 2, 3, 4, 5]
+
+    # threshold_passed_count 语义(与 retriever.similarity_search 中计数口径一致):
+    # 通过 threshold 的候选数 = top_k 截取之前的 12, 而非最终返回的 5
+    threshold_passed = len([
+        c for c in candidates
+        if c.rerank_score is not None and c.rerank_score >= 0.5
+    ])
+    assert threshold_passed == 12
+    # 最终返回 5 < threshold_passed 12, 证明先 threshold 再 top_k 截取
+    assert len(results) < threshold_passed
+
+
+# 9b. 非法 rerank_score 必须被跳过(continue), 不静默写 0, 也不污染计数 ---------------
+async def test_invalid_rerank_score_continues_and_skipped_in_run_rerank():
+    retriever = Retriever(db=MagicMock())
+    candidates = [_make(f"c{i}", rrf_rank=i + 1) for i in range(3)]
+    # 模拟 Reranker 输出: 第 0 条非法(nan), 第 1 条正常, 第 2 条非法(inf)
+    fake_output = [
+        {"index": 0, "rerank_score": float("nan")},
+        {"index": 1, "rerank_score": 0.8},
+        {"index": 2, "rerank_score": float("inf")},
+    ]
+    with patch("core.rag.ranker.Reranker") as fake_reranker:
+        fake_instance = fake_reranker.return_value
+        fake_instance.rerank.return_value = fake_output
+        pairs = await retriever._run_rerank(
+            kb_id="00000000-0000-0000-0000-000000000000",
+            query_text="q",
+            candidates=candidates,
+            actual_candidate_k=3,
+            timings={},
+        )
+    # 非法 score 被 continue 跳过, 仅返回 1 个合法 pair
+    assert pairs == [(1, 0.8)]
+    # 调用方 apply_rerank_scores 不会写回非法 score
+    results = apply_rerank_scores(candidates, pairs or [], threshold=0.0, top_k=5)
+    assert len(results) == 1
+    assert results[0].chunk_id == "c1"
+    assert results[0].rerank_score == 0.8
+    # 调用方 apply_rerank_scores 不会写回非法 score
+    results = apply_rerank_scores(candidates, pairs or [], threshold=0.0, top_k=5)
+    assert len(results) == 1
+    assert results[0].chunk_id == "c1"
+    assert results[0].rerank_score == 0.8
+

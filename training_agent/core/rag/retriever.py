@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import logging
 import re
+import time
 from collections import Counter
 from typing import Optional
 from dataclasses import dataclass
@@ -167,7 +168,10 @@ class Retriever:
         if candidate_count <= 1:
             return False, 0, "insufficient_candidates"
 
-        actual_candidate_k = min(settings.rerank_candidate_k, candidate_count, top_k)
+        # actual_candidate_k 取 RRF 候选全集(受 rerank_candidate_k 上限约束),
+        # **不得受最终 top_k 限制**: rerank 必须对全部 RRF 候选精排,
+        # 之后再由 threshold + 最终 top_k 截取结果。
+        actual_candidate_k = min(settings.rerank_candidate_k, candidate_count)
         if actual_candidate_k <= 1:
             return False, actual_candidate_k, "insufficient_candidates"
 
@@ -531,7 +535,13 @@ class Retriever:
             results = apply_rerank_scores(candidates, reranked_pairs, threshold, top_k)
             timings["rerank_input_count"] = min(actual_candidate_k, len(candidates))
             timings["rerank_output_count"] = len([p for p in reranked_pairs if p[1] is not None])
-            timings["threshold_passed_count"] = len(results)
+            # threshold_passed_count = 通过 threshold 的候选数(在最终 top_k 截取之前),
+            # 即被写回 rerank_score 且 >= threshold 的候选。注意不能用 len(results),
+            # 因为 results 已是 threshold 过滤 + top_k 截取后的最终结果。
+            timings["threshold_passed_count"] = len([
+                c for c in candidates
+                if c.rerank_score is not None and c.rerank_score >= threshold
+            ])
             timings["final_result_count"] = len(results)
             logger.info(
                 f"[RAG][trace={trace_id}] rerank=on 完成 | "
@@ -641,9 +651,10 @@ class Retriever:
                 if score is None or not isinstance(score, (int, float)) or math.isnan(score) or math.isinf(score):
                     logger.warning(
                         f"[RAG] Rerank 结果 score 非法(chunk={rerank_candidates[idx].chunk_id}, "
-                        f"score={score}), 标记跳过"
+                        f"score={score}), 跳过该候选(continue)"
                     )
-                pairs.append((idx, float(score) if score is not None else None))
+                    continue
+                pairs.append((idx, float(score)))
             if not pairs:
                 timings["rerank_reason"] = "rerank_failed_fallback"
                 timings["rerank_error"] = "rerank_mapping_empty"
