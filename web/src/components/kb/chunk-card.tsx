@@ -47,9 +47,9 @@ function formatPage(n: number | undefined | null): string {
 }
 
 export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCardProps) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
   const [showMetadata, setShowMetadata] = useState(false);
-  const previewLength = 280;
+  const previewLength = 600;
   const needsExpand = chunk.content.length > previewLength;
   const displayContent = expanded ? chunk.content : chunk.content.slice(0, previewLength) + (needsExpand ? "…" : "");
 
