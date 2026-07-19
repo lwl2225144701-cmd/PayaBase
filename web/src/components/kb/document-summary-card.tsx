@@ -62,7 +62,6 @@ export function DocumentSummaryCard({ document, isLoading }: DocumentSummaryCard
   }
 
   const fileType = (document.file_type || "file").split("/").pop()?.toUpperCase() || "FILE";
-  const statusText = document.status === "ready" ? "已完成" : document.status === "indexing" ? "索引中" : document.status === "pending" ? "等待中" : document.status === "error" ? "失败" : document.status;
 
   return (
     <Card className="border-border/60 bg-background/80 shadow-sm">
@@ -76,32 +75,22 @@ export function DocumentSummaryCard({ document, isLoading }: DocumentSummaryCard
               <h2 className="truncate text-base font-semibold leading-snug" title={document.title}>
                 {document.title}
               </h2>
-              <p className="mt-0.5 text-xs text-muted-foreground">{document.file_type || "—"}</p>
             </div>
           </div>
 
-          <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-6">
+          <div className="grid flex-1 grid-cols-2 gap-4 sm:grid-cols-4 lg:grid-cols-5">
+            <InfoItem
+              label="类型"
+              value={
+                <Badge variant="outline" className={`w-fit rounded-md px-2 py-0.5 text-xs font-normal ${fileTypeTheme(document.file_type)}`}>
+                  {fileType}
+                </Badge>
+              }
+            />
             <InfoItem label="大小" value={formatBytes(document.file_size)} />
             <InfoItem label="上传时间" value={formatDate(document.created_at)} />
             <InfoItem label="分段策略" value={document.strategy || "通用"} />
             <InfoItem label="切片数量" value={`${document.chunk_count ?? 0} chunks`} />
-            <div className="flex flex-col gap-1">
-              <span className="text-xs text-muted-foreground">状态</span>
-              <Badge
-                variant="outline"
-                className={`w-fit rounded-md px-2 py-0.5 text-xs font-normal ${
-                  document.status === "ready"
-                    ? "border-emerald-200 bg-emerald-50 text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-400"
-                    : document.status === "error"
-                    ? "border-red-200 bg-red-50 text-red-700 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400"
-                    : document.status === "indexing"
-                    ? "border-blue-200 bg-blue-50 text-blue-700 dark:border-blue-800/50 dark:bg-blue-950/40 dark:text-blue-400"
-                    : ""
-                }`}
-              >
-                {statusText}
-              </Badge>
-            </div>
           </div>
         </div>
       </CardContent>

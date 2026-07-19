@@ -9,7 +9,7 @@ import {
   ChevronRightIcon,
   FileTextIcon,
   FlaskConicalIcon,
-  HomeIcon,
+  InfoIcon,
   Loader2,
   RefreshCwIcon,
   SettingsIcon,
@@ -119,17 +119,17 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
 
   return (
     <div className="flex h-full min-h-0 overflow-hidden">
-      {/* Left Sidebar — 复用文档列表页的左侧导航栏风格 */}
+      {/* Left Sidebar — 完全复用知识库详情页侧边栏 */}
       <aside className="hidden w-[260px] shrink-0 flex-col border-r bg-muted/20 md:flex">
         <div className="border-b px-4 py-3">
-          <Link href={backHref}>
+          <Link href="/kb">
             <Button
               variant="ghost"
               size="sm"
               className="h-8 w-full justify-start px-2 text-sm text-muted-foreground hover:text-foreground"
             >
               <ArrowLeftIcon className="mr-2 h-4 w-4" />
-              返回文档列表
+              知识库列表
             </Button>
           </Link>
         </div>
@@ -186,13 +186,36 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
                       <tab.icon className="h-4 w-4" />
                       {tab.label}
                     </span>
-                    <ChevronRightIcon className="h-3.5 w-3.5 opacity-60" />
+                    <ChevronRightIcon className={`h-3.5 w-3.5 opacity-60 ${active ? "" : "hidden"}`} />
                   </button>
                 </li>
               );
             })}
           </ul>
         </nav>
+
+        <div className="border-t px-4 py-3 text-xs text-muted-foreground">
+          <div className="grid grid-cols-2 gap-2">
+            <div className="rounded-md bg-background/60 px-2.5 py-2">
+              <div className="text-[10px] uppercase tracking-wide opacity-70">文档数</div>
+              <div className="mt-0.5 text-sm font-medium text-foreground">{kb?.doc_count ?? 0}</div>
+            </div>
+            <div className="rounded-md bg-background/60 px-2.5 py-2">
+              <div className="text-[10px] uppercase tracking-wide opacity-70">关联应用</div>
+              <div className="mt-0.5 text-sm font-medium text-foreground">0</div>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled
+            className="mt-3 h-8 w-full text-xs"
+            title="即将推出"
+          >
+            <InfoIcon className="mr-1.5 h-3.5 w-3.5" />
+            访问 API
+          </Button>
+        </div>
       </aside>
 
       {/* Main Content */}
@@ -200,12 +223,12 @@ export function DocumentChunkDetail({ kbId, documentId, listParams }: DocumentCh
         {/* Breadcrumb + Title + Actions */}
         <div className="shrink-0 border-b px-6 py-4">
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Link href="/kb" className="hover:text-foreground">
-              <HomeIcon className="h-3.5 w-3.5" />
-            </Link>
-            <ChevronRightIcon className="h-3 w-3" />
             <Link href={`/kb/${kbId}`} className="hover:text-foreground hover:underline">
               {kb?.name || "知识库"}
+            </Link>
+            <ChevronRightIcon className="h-3 w-3" />
+            <Link href={backHref} className="hover:text-foreground hover:underline">
+              文档
             </Link>
             <ChevronRightIcon className="h-3 w-3" />
             <span className="truncate max-w-[200px]" title={document?.title}>

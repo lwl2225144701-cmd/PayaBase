@@ -16,31 +16,28 @@ interface ChunkCardProps {
   kbId: string;
 }
 
-function statusBadge(status: string) {
+function StatusBadge({ status }: { status: string }) {
   if (status === "indexed") {
     return (
-      <Badge
-        variant="outline"
-        className="rounded-md border-emerald-200 bg-emerald-50 px-1.5 py-0 text-[10px] font-normal text-emerald-700 dark:border-emerald-800/50 dark:bg-emerald-950/40 dark:text-emerald-400"
-      >
+      <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
         已向量化
-      </Badge>
+      </span>
     );
   }
   if (status === "error") {
     return (
-      <Badge
-        variant="outline"
-        className="rounded-md border-red-200 bg-red-50 px-1.5 py-0 text-[10px] font-normal text-red-700 dark:border-red-800/50 dark:bg-red-950/40 dark:text-red-400"
-      >
+      <span className="inline-flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+        <span className="h-1.5 w-1.5 rounded-full bg-red-500" />
         异常
-      </Badge>
+      </span>
     );
   }
   return (
-    <Badge variant="outline" className="rounded-md px-1.5 py-0 text-[10px] font-normal text-muted-foreground">
+    <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+      <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground" />
       待处理
-    </Badge>
+    </span>
   );
 }
 
@@ -79,59 +76,7 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
             {chunk.chunk_id}
           </span>
         </div>
-      </div>
-
-      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <span>字符 {chunk.character_count ?? "—"}</span>
-        <span className="text-border">·</span>
-        <span>Token {chunk.token_count ?? "—"}</span>
-        <span className="text-border">·</span>
-        <span>页码 {formatPage(chunk.page_number)}</span>
-        <span className="text-border">·</span>
-        <span className="flex items-center gap-1">
-          状态
-          {statusBadge(chunk.vector_status)}
-        </span>
-      </div>
-
-      <div className="mt-3 text-sm leading-6 text-foreground">{displayContent}</div>
-
-      <div className="mt-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-1">
-          {needsExpand && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-              onClick={(e) => {
-                e.stopPropagation();
-                setExpanded((v) => !v);
-              }}
-            >
-              {expanded ? (
-                <>
-                  <ChevronUpIcon className="mr-1 h-3.5 w-3.5" /> 收起
-                </>
-              ) : (
-                <>
-                  <ChevronDownIcon className="mr-1 h-3.5 w-3.5" /> 展开
-                </>
-              )}
-            </Button>
-          )}
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
-            onClick={(e) => {
-              e.stopPropagation();
-              setShowMetadata((v) => !v);
-            }}
-          >
-            <InfoIcon className="mr-1 h-3.5 w-3.5" /> 查看元数据
-          </Button>
-        </div>
-        <div className="flex items-center gap-1">
+        <div className="flex shrink-0 items-center gap-0.5">
           <Link
             href={`/kb/${kbId}?tab=retrieval_test&document_id=${encodeURIComponent(chunk.document_id)}&chunk_id=${encodeURIComponent(chunk.chunk_id)}`}
             onClick={(e) => e.stopPropagation()}
@@ -146,6 +91,17 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
             className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
             onClick={(e) => {
               e.stopPropagation();
+              setShowMetadata((v) => !v);
+            }}
+          >
+            <InfoIcon className="mr-1 h-3.5 w-3.5" /> 查看元数据
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
               alert("编辑切片暂未开放");
             }}
           >
@@ -153,6 +109,45 @@ export function ChunkCard({ chunk, index, isSelected, onSelect, kbId }: ChunkCar
           </Button>
         </div>
       </div>
+
+      <div className="mt-2.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+        <span>字符 {chunk.character_count ?? "—"}</span>
+        <span className="text-border">·</span>
+        <span>Token {chunk.token_count ?? "—"}</span>
+        <span className="text-border">·</span>
+        <span>页码 {formatPage(chunk.page_number)}</span>
+        <span className="text-border">·</span>
+        <span className="flex items-center gap-1">
+          状态
+          <StatusBadge status={chunk.vector_status} />
+        </span>
+      </div>
+
+      <div className="mt-3 text-sm leading-6 text-foreground">{displayContent}</div>
+
+      {needsExpand && (
+        <div className="mt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              setExpanded((v) => !v);
+            }}
+          >
+            {expanded ? (
+              <>
+                <ChevronUpIcon className="mr-1 h-3.5 w-3.5" /> 收起
+              </>
+            ) : (
+              <>
+                <ChevronDownIcon className="mr-1 h-3.5 w-3.5" /> 展开
+              </>
+            )}
+          </Button>
+        </div>
+      )}
 
       {showMetadata && <ChunkMetadata chunk={chunk} />}
     </div>
