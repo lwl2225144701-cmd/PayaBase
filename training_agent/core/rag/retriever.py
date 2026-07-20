@@ -66,16 +66,18 @@ def apply_rerank_scores(
     candidates: list[RetrievedChunk],
     rerank_pairs: list[tuple[int, Optional[float]]],
     threshold: float,
-    top_k: int,
 ) -> list[RetrievedChunk]:
-    """Rerank 路径: 把 rerank 分数写回 chunk, 按 rerank_score 做 threshold 过滤, 再截取 top_k。
+    """Rerank 路径: 把 rerank 分数写回 chunk, 按 rerank_score 做 threshold 过滤。
 
     rerank_pairs: [(输入序号, rerank_score), ...], 已按重排后顺序排列。
     通过输入序号映射回候选块(禁止 content 匹配)。
 
     - score 为 None / 非数字 / NaN / Inf 时记录警告并跳过该结果, 不允许静默写成 0。
-    - threshold 在 rerank 之后、最终 top_k 之前执行; 不足 top_k 按实际数量返回;
+    - threshold 在 rerank 之后执行; 不足 top_k 按实际数量返回;
       全部低于 threshold 时返回空列表, 不补回低分结果。
+    - 本函数**不再做最终 top_k 截断**: 由 similarity_search 的统一后处理
+      (_post_process_results, 顺序: 去重 → 同文档限制 → final top_k → 重编号)
+      在返回前完成。此处仅返回全部通过 threshold 的 rerank 结果。
     """
     reranked: list[RetrievedChunk] = []
     for rank, (idx, score) in enumerate(rerank_pairs, 1):
@@ -97,28 +99,27 @@ def apply_rerank_scores(
 
     valid = [c for c in reranked if c.rerank_score is not None]
     filtered = [c for c in valid if c.rerank_score >= threshold]
-    final = filtered[:top_k]
-    for pos, c in enumerate(final, 1):
+    for pos, c in enumerate(filtered, 1):
         c.rank = pos
         c.final_rank = pos
-    return final
+    return filtered
 
 
-def finalize_rrf(candidates: list[RetrievedChunk], top_k: int) -> list[RetrievedChunk]:
+def finalize_rrf(candidates: list[RetrievedChunk]) -> list[RetrievedChunk]:
     """RRF 路径(rerank 未开启/未生效): final_score = rrf_score, score_type='rrf'。
 
-    RRF 分数不是相关度, **不执行** threshold 过滤, 直接按 rrf_rank 截取 top_k。
+    RRF 分数不是相关度, **不执行** threshold 过滤。
+    本函数**不做最终 top_k 截断**: 由统一后处理 _post_process_results 完成。
     """
     for c in candidates:
         c.final_score = c.rrf_score
         c.final_rank = c.rrf_rank
         c.score = c.rrf_score if c.rrf_score is not None else 0.0
         c.score_type = "rrf"
-    final = candidates[:top_k]
-    for pos, c in enumerate(final, 1):
+    for pos, c in enumerate(candidates, 1):
         c.rank = pos
         c.final_rank = pos
-    return final
+    return candidates
 
 
 def _content_dedup_key(content: str) -> str:
@@ -140,50 +141,106 @@ def _post_process_results(
     results: list[RetrievedChunk],
     dedup: bool = True,
     max_per_doc: int = 0,
-) -> tuple[list[RetrievedChunk], int, int]:
-    """最终结果返回前的后处理: 重复切片去重 + 同文档结果数量限制。
+    top_k: int = 0,
+    min_content_length: int = 50,
+) -> tuple[list[RetrievedChunk], dict[str, object]]:
+    """最终结果返回前的统一后处理。
 
-    在 Rerank → threshold → final top_k 之后、接口返回之前执行,
-    保持「最终结果返回前」的语义, 不影响 RRF/rerank/threshold 的统计口径。
+    统一处理顺序(与用户要求一致):
+      1) 内容去重: 同正文(归一化后)只保留首条; 短文本(正文长度 < min_content_length)
+         只按 chunk_id 去重, 避免短噪声误并。
+      2) 同文档结果数量限制: 每个有效 document_id 最多保留 max_per_doc 条;
+         *候选仅含一个有效 document_id 时自动跳过限制*;
+         *document_id 为空时使用 unknown:{chunk_id}*, 避免所有空 ID 被视为同一文档。
+      3) final top_k 截取。
+      4) 最终 rank/final_rank 重新连续编号。
+
+    在 Rerank → threshold 之后、接口返回之前执行, 不影响
+    RRF/rerank/threshold 的统计口径(threshold_passed_count 仍指 top_k 截取前通过数)。
 
     Returns:
-        (处理后列表, 去重移除数, 同文档限制移除数)
-
-    顺序: 先去重(保留首次出现的切片), 再按 document_id 限额(保留排名靠前的)。
-    两者均保持原有排序(降序)。
+        (处理后列表, 统计字典)
+        统计字典含: deduplicate_before/after/removed_count,
+        document_limit_enabled/before/after/removed_count。
     """
-    dedup_removed = 0
-    doc_removed = 0
-    out: list[RetrievedChunk] = []
+    stats: dict[str, object] = {
+        "deduplicate_before_count": 0,
+        "deduplicate_after_count": 0,
+        "deduplicate_removed_count": 0,
+        "document_limit_enabled": False,
+        "document_limit_before_count": 0,
+        "document_limit_after_count": 0,
+        "document_limit_removed_count": 0,
+    }
 
-    # 1) 重复切片去重: 正文归一化后相同的只保留第一条
+    # 1) 内容去重
+    stats["deduplicate_before_count"] = len(results)
+    out: list[RetrievedChunk] = []
     if dedup:
-        seen: set[str] = set()
+        seen_content: set[str] = set()
+        seen_chunk: set[str] = set()
         for c in results:
-            key = _content_dedup_key(c.content)
-            if key and key in seen:
-                dedup_removed += 1
+            cid = c.chunk_id
+            content = (c.content or "").strip()
+            # 短文本: 只按 chunk_id 去重, 不参与正文归一化匹配
+            if len(content) < min_content_length:
+                if cid in seen_chunk:
+                    stats["deduplicate_removed_count"] += 1
+                    continue
+                seen_chunk.add(cid)
+                out.append(c)
+                continue
+            key = _content_dedup_key(content)
+            if key and key in seen_content:
+                stats["deduplicate_removed_count"] += 1
                 continue
             if key:
-                seen.add(key)
+                seen_content.add(key)
+            if cid in seen_chunk:
+                stats["deduplicate_removed_count"] += 1
+                continue
+            seen_chunk.add(cid)
             out.append(c)
     else:
         out = list(results)
+    stats["deduplicate_after_count"] = len(out)
 
-    # 2) 同文档结果数量限制: 每个 document_id 最多保留 max_per_doc 条(排名靠前)
-    if max_per_doc and max_per_doc > 0:
+    # 2) 同文档结果数量限制
+    # document_id 为空时使用 unknown:{chunk_id}, 避免所有空 ID 视为同一文档
+    valid_doc_ids = {
+        (c.document_id if c.document_id else f"unknown:{c.chunk_id}")
+        for c in out
+    }
+    # 候选仅含一个有效 document_id 时自动跳过限制
+    if max_per_doc and max_per_doc > 0 and len(valid_doc_ids) > 1:
+        stats["document_limit_enabled"] = True
+        stats["document_limit_before_count"] = len(out)
         counts: dict[str, int] = {}
         limited: list[RetrievedChunk] = []
         for c in out:
-            n = counts.get(c.document_id, 0)
+            doc_key = c.document_id if c.document_id else f"unknown:{c.chunk_id}"
+            n = counts.get(doc_key, 0)
             if n >= max_per_doc:
-                doc_removed += 1
+                stats["document_limit_removed_count"] += 1
                 continue
-            counts[c.document_id] = n + 1
+            counts[doc_key] = n + 1
             limited.append(c)
         out = limited
+        stats["document_limit_after_count"] = len(out)
+    else:
+        stats["document_limit_before_count"] = len(out)
+        stats["document_limit_after_count"] = len(out)
 
-    return out, dedup_removed, doc_removed
+    # 3) final top_k 截取
+    if top_k and top_k > 0:
+        out = out[:top_k]
+
+    # 4) 最终 rank/final_rank 重新连续编号
+    for pos, c in enumerate(out, 1):
+        c.rank = pos
+        c.final_rank = pos
+
+    return out, stats
 
 
 class Retriever:
@@ -518,6 +575,7 @@ class Retriever:
         # 零分文档排序在末尾, 剔除后剩余结果保持原 1-based 排名不变。
         bm25_valid = _filter_valid_bm25_results(bm25_results)
         timings["bm25_valid_count"] = len(bm25_valid)
+        timings["bm25_positive_count"] = len(bm25_valid)
         if len(bm25_valid) != len(bm25_results):
             logger.info(
                 f"[RAG] BM25 零分剔除: {len(bm25_results) - len(bm25_valid)} 条零分结果不参与融合"
@@ -598,6 +656,7 @@ class Retriever:
         timings["trace_id"] = trace_id
         timings["vector_result_count"] = len(rows)
         timings["bm25_result_count"] = len(bm25_results)
+        timings["bm25_raw_count"] = len(bm25_results)
         timings["rrf_candidate_count"] = len(candidates)
 
         reranked_pairs: list[tuple[int, Optional[float]]] | None = None
@@ -611,53 +670,60 @@ class Retriever:
             )
 
         if should_rerank and reranked_pairs is not None:
-            results = apply_rerank_scores(candidates, reranked_pairs, threshold, top_k)
+            results = apply_rerank_scores(candidates, reranked_pairs, threshold)
             timings["rerank_input_count"] = min(actual_candidate_k, len(candidates))
             timings["rerank_output_count"] = len([p for p in reranked_pairs if p[1] is not None])
             # threshold_passed_count = 通过 threshold 的候选数(在最终 top_k 截取之前),
             # 即被写回 rerank_score 且 >= threshold 的候选。注意不能用 len(results),
-            # 因为 results 已是 threshold 过滤 + top_k 截取后的最终结果。
+            # 因为 results 此时是全部通过 threshold 的 rerank 结果, 尚未经 top_k 截取/后处理。
             timings["threshold_passed_count"] = len([
                 c for c in candidates
                 if c.rerank_score is not None and c.rerank_score >= threshold
             ])
-            timings["final_result_count"] = len(results)
             logger.info(
                 f"[RAG][trace={trace_id}] rerank=on 完成 | "
                 f"query={query_text!r} top_k={top_k} threshold={threshold} | "
                 f"vector={len(rows)} bm25={len(bm25_results)} rrf_candidates={len(candidates)} | "
                 f"rerank_input={timings['rerank_input_count']} rerank_output={timings['rerank_output_count']} | "
-                f"threshold_passed={len(results)} final={len(results)}"
+                f"threshold_passed={timings['threshold_passed_count']}"
             )
         else:
             logger.info(
                 f"[RAG][trace={trace_id}] rerank disabled, threshold skipped because "
                 f"RRF score is not a relevance score; reason={rerank_reason}"
             )
-            results = finalize_rrf(candidates, top_k)
+            results = finalize_rrf(candidates)
             timings["rerank_input_count"] = 0
             timings["rerank_output_count"] = 0
+            # rrf 路径不执行 threshold, 此处全部候选视为通过
             timings["threshold_passed_count"] = len(results)
-            timings["final_result_count"] = len(results)
 
-        # 第二阶段后处理: 重复切片去重 + 同文档结果数量限制。
-        # 位置在 Rerank → threshold → final top_k 之后、接口返回之前;
-        # 不改动 RRF/rerank/threshold 的统计口径(threshold_passed_count 仍指 top_k 截取前通过数)。
+        # 统一后处理: 去重 → 同文档限制 → final top_k → 重新编号。
+        # 位置在 Rerank → threshold 之后、接口返回之前;
+        # threshold_passed_count 已在上方统计(指 top_k 截取前通过数), 不受后处理影响。
         timings["max_results_per_doc"] = settings.max_results_per_doc
         pre_pp = len(results)
-        results, dedup_removed, doc_removed = _post_process_results(
-            results, dedup=True, max_per_doc=settings.max_results_per_doc
+        results, pp_stats = _post_process_results(
+            results,
+            dedup=True,
+            max_per_doc=settings.max_results_per_doc,
+            top_k=top_k,
+            min_content_length=settings.dedup_min_content_length,
         )
-        timings["dedup_removed_count"] = dedup_removed
-        timings["doc_limit_removed_count"] = doc_removed
-        # 后处理可能减少条数, 需重新连续编号 rank/final_rank(rerank_rank 由 reranker 决定, 不动)
-        for pos, c in enumerate(results, 1):
-            c.rank = pos
-            c.final_rank = pos
-        if dedup_removed or doc_removed:
+        timings["deduplicate_before_count"] = pp_stats["deduplicate_before_count"]
+        timings["deduplicate_after_count"] = pp_stats["deduplicate_after_count"]
+        timings["deduplicate_removed_count"] = pp_stats["deduplicate_removed_count"]
+        timings["document_limit_enabled"] = pp_stats["document_limit_enabled"]
+        timings["document_limit_before_count"] = pp_stats["document_limit_before_count"]
+        timings["document_limit_after_count"] = pp_stats["document_limit_after_count"]
+        timings["document_limit_removed_count"] = pp_stats["document_limit_removed_count"]
+        # final_result_count 必须在全部后处理 + top_k 完成后统计
+        timings["final_result_count"] = len(results)
+        if pre_pp != len(results):
             logger.info(
-                f"[RAG][trace={trace_id}] 后处理: 去重移除={dedup_removed} 同文档限制移除={doc_removed} "
-                f"({pre_pp} -> {len(results)})"
+                f"[RAG][trace={trace_id}] 后处理: 去重移除={pp_stats['deduplicate_removed_count']} "
+                f"同文档限制移除={pp_stats['document_limit_removed_count']} "
+                f"top_k={top_k} ({pre_pp} -> {len(results)})"
             )
 
         # 每条结果记 trace（不记正文）

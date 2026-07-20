@@ -76,7 +76,10 @@ class Settings(BaseSettings):
 
     # 检索结果后处理
     # 同文档结果数量上限: 每个 document_id 在最终结果中最多保留 N 条; 0 = 不限制。
-    max_results_per_doc: int = 0
+    # 默认 3(候选仅含一个有效 document_id 时自动跳过限制, 见 retriever._post_process_results)。
+    max_results_per_doc: int = 3
+    # 内容去重的最小正文长度: 正文长度 < 该值时只按 chunk_id 去重, 避免短噪声误并。
+    dedup_min_content_length: int = 50
 
     # Search (OpenSERP)
     search_service_url: str = "http://localhost:8004"
