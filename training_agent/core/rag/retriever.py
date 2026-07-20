@@ -121,6 +121,71 @@ def finalize_rrf(candidates: list[RetrievedChunk], top_k: int) -> list[Retrieved
     return final
 
 
+def _content_dedup_key(content: str) -> str:
+    """归一化正文, 用于重复切片去重(忽略大小写/首尾空白/连续空白)。"""
+    if not content:
+        return ""
+    return re.sub(r"\s+", " ", (content or "").strip().lower())
+
+
+def _filter_valid_bm25_results(bm25_results: list[tuple]) -> list[tuple]:
+    """剔除 BM25 零分结果(零分不参与 RRF 融合, 也不分配 bm25_rank)。
+
+    零分文档在 BM25 降序排列中位于末尾, 剔除后剩余结果保持原 1-based 排名不变。
+    """
+    return [(idx, score) for idx, score in bm25_results if score > 0]
+
+
+def _post_process_results(
+    results: list[RetrievedChunk],
+    dedup: bool = True,
+    max_per_doc: int = 0,
+) -> tuple[list[RetrievedChunk], int, int]:
+    """最终结果返回前的后处理: 重复切片去重 + 同文档结果数量限制。
+
+    在 Rerank → threshold → final top_k 之后、接口返回之前执行,
+    保持「最终结果返回前」的语义, 不影响 RRF/rerank/threshold 的统计口径。
+
+    Returns:
+        (处理后列表, 去重移除数, 同文档限制移除数)
+
+    顺序: 先去重(保留首次出现的切片), 再按 document_id 限额(保留排名靠前的)。
+    两者均保持原有排序(降序)。
+    """
+    dedup_removed = 0
+    doc_removed = 0
+    out: list[RetrievedChunk] = []
+
+    # 1) 重复切片去重: 正文归一化后相同的只保留第一条
+    if dedup:
+        seen: set[str] = set()
+        for c in results:
+            key = _content_dedup_key(c.content)
+            if key and key in seen:
+                dedup_removed += 1
+                continue
+            if key:
+                seen.add(key)
+            out.append(c)
+    else:
+        out = list(results)
+
+    # 2) 同文档结果数量限制: 每个 document_id 最多保留 max_per_doc 条(排名靠前)
+    if max_per_doc and max_per_doc > 0:
+        counts: dict[str, int] = {}
+        limited: list[RetrievedChunk] = []
+        for c in out:
+            n = counts.get(c.document_id, 0)
+            if n >= max_per_doc:
+                doc_removed += 1
+                continue
+            counts[c.document_id] = n + 1
+            limited.append(c)
+        out = limited
+
+    return out, dedup_removed, doc_removed
+
+
 class Retriever:
     """Vector + BM25 hybrid search with RRF."""
 
@@ -256,17 +321,21 @@ class Retriever:
         bm25_results: list[tuple],
         k: int = 60
     ) -> list[tuple]:
-        """Reciprocal Rank Fusion
-        
-        RRF = sum(1 / (k + rank))
+        """标准 Reciprocal Rank Fusion (RRF)。
+
+        RRF = sum(1 / (k + rank)), **仅使用排名(rank), 不使用原始 score**。
+        调用方负责在传入前剔除零分 BM25 结果(见 similarity_search)。
+
+        注意: 标准 RRF 中每个召回通道只贡献其排名的倒数, 与通道自身的
+        相关性分数无关 —— 这也是它与加权融合的本质区别。
         """
-        rrf_scores = {}
+        rrf_scores: dict[int, float] = {}
 
-        for rank, (doc_idx, score) in enumerate(vector_results, 1):
-            rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + score / (k + rank)
+        for rank, (doc_idx, _score) in enumerate(vector_results, 1):
+            rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + 1.0 / (k + rank)
 
-        for rank, (doc_idx, score) in enumerate(bm25_results, 1):
-            rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + score / (k + rank)
+        for rank, (doc_idx, _score) in enumerate(bm25_results, 1):
+            rrf_scores[doc_idx] = rrf_scores.get(doc_idx, 0) + 1.0 / (k + rank)
 
         return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
@@ -445,6 +514,15 @@ class Retriever:
         timings["bm25_ms"] = int((time.time() - t_stage) * 1000)
         logger.info(f"[RAG] BM25结果: {len(bm25_results)}条")
 
+        # 第二阶段: BM25 零分结果不参与 RRF 融合(也不分配 bm25_rank)。
+        # 零分文档排序在末尾, 剔除后剩余结果保持原 1-based 排名不变。
+        bm25_valid = _filter_valid_bm25_results(bm25_results)
+        timings["bm25_valid_count"] = len(bm25_valid)
+        if len(bm25_valid) != len(bm25_results):
+            logger.info(
+                f"[RAG] BM25 零分剔除: {len(bm25_results) - len(bm25_valid)} 条零分结果不参与融合"
+            )
+
         # 4. 向量分数与排名（按 distance 升序）
         logger.info(f"[RAG] 构建RRF融合")
         t_stage = time.time()
@@ -464,7 +542,8 @@ class Retriever:
         vector_results = [(i, sim) for (i, _dist, sim) in vector_scored]
 
         # 5. RRF 融合（仅用于候选排序，不代表真实相关度）
-        combined = self._rrf_fusion(vector_results, bm25_results)
+        # 标准 RRF: 仅用排名, 零分 BM25 已剔除(bm25_valid)
+        combined = self._rrf_fusion(vector_results, bm25_valid, k=settings.rrf_k)
         timings["rrf_ms"] = int((time.time() - t_stage) * 1000)
         logger.info(f"[RAG] RRF融合完成, combined={len(combined)}")
 
@@ -472,7 +551,7 @@ class Retriever:
         candidates: list[RetrievedChunk] = []
         used_ids: set = set()
         bm25_map: dict[int, tuple[float, int]] = {
-            idx: (score, rank) for rank, (idx, score) in enumerate(bm25_results, 1)
+            idx: (score, rank) for rank, (idx, score) in enumerate(bm25_valid, 1)
         }
         rrf_rank = 0
         for doc_idx, rrf_score in combined:
@@ -560,6 +639,26 @@ class Retriever:
             timings["rerank_output_count"] = 0
             timings["threshold_passed_count"] = len(results)
             timings["final_result_count"] = len(results)
+
+        # 第二阶段后处理: 重复切片去重 + 同文档结果数量限制。
+        # 位置在 Rerank → threshold → final top_k 之后、接口返回之前;
+        # 不改动 RRF/rerank/threshold 的统计口径(threshold_passed_count 仍指 top_k 截取前通过数)。
+        timings["max_results_per_doc"] = settings.max_results_per_doc
+        pre_pp = len(results)
+        results, dedup_removed, doc_removed = _post_process_results(
+            results, dedup=True, max_per_doc=settings.max_results_per_doc
+        )
+        timings["dedup_removed_count"] = dedup_removed
+        timings["doc_limit_removed_count"] = doc_removed
+        # 后处理可能减少条数, 需重新连续编号 rank/final_rank(rerank_rank 由 reranker 决定, 不动)
+        for pos, c in enumerate(results, 1):
+            c.rank = pos
+            c.final_rank = pos
+        if dedup_removed or doc_removed:
+            logger.info(
+                f"[RAG][trace={trace_id}] 后处理: 去重移除={dedup_removed} 同文档限制移除={doc_removed} "
+                f"({pre_pp} -> {len(results)})"
+            )
 
         # 每条结果记 trace（不记正文）
         for c in results:

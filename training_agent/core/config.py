@@ -71,6 +71,13 @@ class Settings(BaseSettings):
     rerank_gap_threshold: float = 0.03
     rerank_query_len_threshold: int = 8
 
+    # RRF 融合 (标准 Reciprocal Rank Fusion: RRF = sum(1/(k+rank)), 仅用排名)
+    rrf_k: int = 60
+
+    # 检索结果后处理
+    # 同文档结果数量上限: 每个 document_id 在最终结果中最多保留 N 条; 0 = 不限制。
+    max_results_per_doc: int = 0
+
     # Search (OpenSERP)
     search_service_url: str = "http://localhost:8004"
     search_default_engine: str = "baidu"
