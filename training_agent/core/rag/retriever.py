@@ -10,7 +10,7 @@ import re
 import time
 from collections import Counter
 from typing import Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from core.infrastructure.redis.client import get_redis_client
 from sqlalchemy import select, func, text
@@ -60,6 +60,8 @@ class RetrievedChunk:
     final_score: Optional[float] = None
     final_rank: Optional[int] = None
     score_type: str = "rrf"
+    matched_channels: list = field(default_factory=list)  # 命中通道: vector / bm25
+    matched_terms: list = field(default_factory=list)     # BM25 命中查询词
 
 
 def apply_rerank_scores(
@@ -396,6 +398,92 @@ class Retriever:
 
         return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
+    async def _bm25_search_sql(
+        self, kb_uuid: uuid.UUID, terms: list[str], top_k: int
+    ) -> list[dict]:
+        """标准 BM25 全库 SQL 召回(独立通道, 不读取向量 corpus)。
+
+        公式:
+            idf = ln(1 + (N - df + 0.5) / (df + 0.5))
+            score = Σ idf * tf*(k1+1) / (tf + k1*(1 - b + b*dl/avgdl))
+        N / avgdl / df 均限定在当前 knowledge_base_id。
+        仅返回 score > 0; 相同分数按 chunk_id 稳定排序。
+        请求阶段不加载全库 Chunk 到 Python(全在 DB 内聚合)。
+        """
+        if not terms:
+            return []
+        from sqlalchemy.dialects.postgresql import array as pg_array
+
+        k1 = float(settings.bm25_k1)
+        b = float(settings.bm25_b)
+        sql = text("""
+            WITH kb_stats AS (
+                SELECT
+                    COUNT(*) AS n,
+                    COALESCE(AVG(NULLIF(token_count, 0)), 0) AS avgdl
+                FROM chunk_lexical_documents
+                WHERE knowledge_base_id = :kb_id
+            ),
+            matched AS (
+                SELECT
+                    t.chunk_id,
+                    t.term,
+                    t.term_frequency AS tf,
+                    d.token_count AS dl,
+                    COUNT(*) OVER (PARTITION BY t.term) AS df
+                FROM chunk_lexical_terms t
+                JOIN chunk_lexical_documents d
+                  ON d.chunk_id = t.chunk_id
+                 AND d.knowledge_base_id = t.knowledge_base_id
+                WHERE t.knowledge_base_id = :kb_id
+                  AND t.term = ANY(:terms)
+            ),
+            scored AS (
+                SELECT
+                    m.chunk_id,
+                    m.term,
+                    m.tf,
+                    m.dl,
+                    m.df,
+                    (LN(1 + (s.n - m.df + 0.5) / (m.df + 0.5))
+                       * (m.tf * (:k1 + 1))
+                       / (m.tf + :k1 * (1 - :b + :b * COALESCE(m.dl / NULLIF(s.avgdl, 0), 0))))
+                    AS term_score
+                FROM matched m
+                CROSS JOIN kb_stats s
+            )
+            SELECT
+                chunk_id,
+                SUM(term_score) AS bm25_score,
+                ARRAY_AGG(term) AS matched_terms,
+                (SELECT n FROM kb_stats) AS n
+            FROM scored
+            GROUP BY chunk_id
+            HAVING SUM(term_score) > 0
+            ORDER BY bm25_score DESC, chunk_id ASC
+            LIMIT :limit
+        """)
+        result = await self.db.execute(
+            sql,
+            {
+                "kb_id": kb_uuid,
+                "terms": pg_array(terms),
+                "k1": k1,
+                "b": b,
+                "limit": top_k,
+            },
+        )
+        rows = result.mappings().all()
+        return [
+            {
+                "chunk_id": str(r["chunk_id"]),
+                "bm25_score": float(r["bm25_score"]),
+                "matched_terms": list(r["matched_terms"]) if r["matched_terms"] else [],
+                "n": int(r["n"] or 0),
+            }
+            for r in rows
+        ]
+
     async def search(
         self,
         query_text: str,
@@ -489,18 +577,25 @@ class Retriever:
         use_rerank: bool = True,
         return_timings: bool = False,
     ) -> list[RetrievedChunk] | tuple[list[RetrievedChunk], dict[str, object]]:
-        """Hybrid搜索 + 元数据过滤 + Rerank
-        
-        Args:
-            query_vector: 查询向量
-            kb_id: 知识库ID
-            top_k: 返回数量
-            threshold: 相似度阈值
-            filters: 元数据过滤条件，如 {"chunk_type": "pdf", "category": "tech"}
+        """双路独立召回 + 标准 RRF + Rerank + 后处理(第三阶段)。
+
+        链路(固定):
+        向量独立召回 Top{VECTOR_RECALL_TOP_K}
+        → BM25 独立全库召回 Top{BM25_RECALL_TOP_K}
+        → 按 chunk_id 合并(禁 content 匹配)
+        → 标准 RRF Top{RRF_CANDIDATE_TOP_K}(仅用排名)
+        → Rerank Top{RERANK_CANDIDATE_K}
+        → threshold → 去重 → 同文档限制 → final top_k → final_rank 重编号
+
+        降级: 单路失败则另一路继续; 两路都失败返回空 + degraded_mode=both_failed。
         """
         import time
+
+        trace_id = uuid.uuid4().hex
         timings: dict[str, object] = {
+            "trace_id": trace_id,
             "vector_sql_ms": 0,
+            "bm25_sql_ms": 0,
             "bm25_ms": 0,
             "rrf_ms": 0,
             "rerank_ms": 0,
@@ -510,138 +605,220 @@ class Retriever:
             "rerank_candidate_k": 0,
             "rerank_cache_hit": False,
             "rerank_error": "",
+            "vector_result_count": 0,
+            "bm25_result_count": 0,
+            "bm25_query_term_count": 0,
+            "bm25_index_document_count": 0,
+            "rrf_candidate_count_before_limit": 0,
+            "rrf_candidate_count": 0,
+            "rerank_input_count": 0,
+            "rerank_output_count": 0,
+            "threshold_passed_count": 0,
+            "final_result_count": 0,
+            "vector_status": "ok",
+            "bm25_status": "ok",
+            "degraded_mode": "none",
+            "degraded_reason": "",
+            "max_results_per_doc": settings.max_results_per_doc,
         }
 
         kb_uuid = uuid.UUID(kb_id)
-        logger.info(f"[RAG] Hybrid检索 - kb={kb_id}, top_k={top_k}, filters={filters}")
+        logger.info(f"[RAG] 双路检索 - kb={kb_id}, top_k={top_k}, filters={filters}")
 
-        # 1. 构建SQLwith过滤条件
-        vector_top_k = top_k * 3
-        query_vector_str = "[" + ",".join(map(str, query_vector)) + "]"
-        logger.info(f"[RAG] 向量查询准备, vector_dim={len(query_vector)}")
+        vector_top_k = settings.vector_recall_top_k
+        bm25_top_k = settings.bm25_recall_top_k
+        rrf_top_k = settings.rrf_candidate_top_k
 
-        where_clauses = ["d.knowledge_base_id = :kb_id", "c.vector IS NOT NULL"]
-        params = {"kb_id": kb_uuid, "query_vector": query_vector_str, "limit": vector_top_k}
-
-        # 元数据过滤
-        if filters:
-            for key, value in filters.items():
-                where_clauses.append(f"c.meta->>:key = :{key}_value")
-                params[f"{key}_value"] = value
-
-        where_sql = " AND ".join(where_clauses)
-
-        logger.info(f"[RAG] 执行SQL查询")
-        sql = text(f"""
-            SELECT
-                c.id, c.content, c.summary, c.document_id, c.vector, c.meta,
-                c.hypothetical_questions, d.title,
-                c.vector <=> CAST(:query_vector AS vector(512)) AS distance
-            FROM chunks c
-            JOIN documents d ON c.document_id = d.id
-            WHERE {where_sql}
-            ORDER BY distance
-            LIMIT :limit
-        """)
+        # ===== 1. 向量独立召回 =====
+        vector_status = "ok"
+        vector_rows: list[dict] = []
+        vector_row_map: dict[str, dict] = {}
+        vector_rank_map: dict[str, tuple] = {}
         t_stage = time.time()
-        result = await self.db.execute(sql, params)
-        rows = list(result.mappings().all())
-        timings["vector_sql_ms"] = int((time.time() - t_stage) * 1000)
-        logger.info(f"[RAG] 向量检索结果: {len(rows)}条")
+        try:
+            if not query_vector:
+                raise ValueError("query_vector 为空")
+            query_vector_str = "[" + ",".join(map(str, query_vector)) + "]"
+            where_clauses = ["d.knowledge_base_id = :kb_id", "c.vector IS NOT NULL"]
+            params: dict = {"kb_id": kb_uuid, "query_vector": query_vector_str, "limit": vector_top_k}
+            if filters:
+                for key, value in filters.items():
+                    where_clauses.append(f"c.meta->>:key = :{key}_value")
+                    params[f"{key}_value"] = value
+            where_sql = " AND ".join(where_clauses)
+            sql = text(f"""
+                SELECT
+                    c.id, c.content, c.summary, c.document_id, c.vector, c.meta,
+                    c.hypothetical_questions, d.title,
+                    c.vector <=> CAST(:query_vector AS vector(512)) AS distance
+                FROM chunks c
+                JOIN documents d ON c.document_id = d.id
+                WHERE {where_sql}
+                ORDER BY distance
+                LIMIT :limit
+            """)
+            result = await self.db.execute(sql, params)
+            for row in result.mappings().all():
+                vector_rows.append(row)
+            timings["vector_sql_ms"] = int((time.time() - t_stage) * 1000)
+            for rank, row in enumerate(sorted(vector_rows, key=lambda r: float(r["distance"])), 1):
+                cid = str(row["id"])
+                dist = float(row["distance"])
+                sim = 1.0 - dist
+                vector_row_map[cid] = row
+                vector_rank_map[cid] = (dist, sim, rank)
+        except Exception as e:
+            vector_status = "error"
+            timings["vector_sql_ms"] = int((time.time() - t_stage) * 1000)
+            logger.warning(f"[RAG][trace={trace_id}] 向量召回失败: {e}")
 
-        if not rows:
-            logger.info("[RAG] 无检索结果")
+        # ===== 2. BM25 独立全库召回 =====
+        bm25_status = "ok"
+        bm25_results: list[tuple] = []  # (chunk_id, score)
+        bm25_term_map: dict[str, list] = {}
+        bm25_index_count = 0
+        t_stage = time.time()
+        try:
+            from core.rag.tokenizer import tokenize_query
+            terms = tokenize_query(query_text)[: settings.bm25_max_query_terms]
+            timings["bm25_query_term_count"] = len(terms)
+            bm25_rows = await self._bm25_search_sql(kb_uuid, terms, bm25_top_k) if terms else []
+            timings["bm25_sql_ms"] = int((time.time() - t_stage) * 1000)
+            timings["bm25_ms"] = timings["bm25_sql_ms"]
+            for r in bm25_rows:
+                bm25_results.append((r["chunk_id"], r["bm25_score"]))
+                bm25_term_map[r["chunk_id"]] = r["matched_terms"]
+            # 防御性: 仅保留严格 >0 的 BM25 结果(零/负分不参与 RRF 融合)
+            bm25_results = _filter_valid_bm25_results(bm25_results)
+            bm25_index_count = bm25_rows[0]["n"] if bm25_rows else 0
+            bm25_status = "empty" if not bm25_results else "ok"
+        except Exception as e:
+            bm25_status = "error"
+            timings["bm25_sql_ms"] = int((time.time() - t_stage) * 1000)
+            timings["bm25_ms"] = timings["bm25_sql_ms"]
+            logger.warning(f"[RAG][trace={trace_id}] BM25 全库召回失败: {e}")
+
+        timings["vector_status"] = vector_status
+        timings["bm25_status"] = bm25_status
+        timings["vector_result_count"] = len(vector_rows)
+        timings["bm25_result_count"] = len(bm25_results)
+        timings["bm25_index_document_count"] = bm25_index_count
+
+        # ===== 降级判定 =====
+        degraded_mode = "none"
+        degraded_reason = ""
+        if vector_status == "error" and bm25_status == "error":
+            # 两路都**失败**(error), 非"空结果"。空结果不是失败, 走单路降级。
+            timings["degraded_mode"] = "both_failed"
+            timings["degraded_reason"] = "vector_error_and_bm25_error"
             timings["retrieval_total_ms"] = (
-                int(timings["vector_sql_ms"]) + int(timings["bm25_ms"]) + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
+                int(timings["vector_sql_ms"]) + int(timings["bm25_ms"])
+                + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
+            )
+            logger.warning(f"[RAG][trace={trace_id}] 双路检索均失败, 返回空")
+            return ([], timings) if return_timings else []
+        if vector_status == "error":
+            degraded_mode = "bm25_only"
+            degraded_reason = "vector_recall_error"
+        elif bm25_status == "error":
+            degraded_mode = "vector_only"
+            degraded_reason = "bm25_recall_error"
+        elif not vector_rows and not bm25_results:
+            timings["retrieval_total_ms"] = (
+                int(timings["vector_sql_ms"]) + int(timings["bm25_ms"])
             )
             return ([], timings) if return_timings else []
+        timings["degraded_mode"] = degraded_mode
+        timings["degraded_reason"] = degraded_reason
 
-        # 2. 构建BM25 corpus
-        corpus = []
-        for row in rows:
-            # 索引期不再生成 summary/HyDE，BM25 直接基于原文内容做词法匹配
-            content = (row.get("summary") or row.get("content") or "")[:800]
-            corpus.append(content)
+        # ===== 3. 合并: 按 chunk_id(禁止 content 匹配) =====
+        all_cids: list[str] = []
+        seen_cids: set[str] = set()
+        for cid in vector_rank_map:
+            if cid not in seen_cids:
+                all_cids.append(cid)
+                seen_cids.add(cid)
+        for cid, _ in bm25_results:
+            if cid not in seen_cids:
+                all_cids.append(cid)
+                seen_cids.add(cid)
+        cid_to_idx = {cid: i for i, cid in enumerate(all_cids)}
 
-        # 3. BM25搜索
-        logger.info(f"[RAG] 执行BM25检索")
+        # 补充查询 BM25 独有 chunk 的完整信息(仅查命中 chunk, 不加载全库)
+        bm25_only_cids = [cid for cid in all_cids if cid not in vector_row_map]
+        extra_row_map: dict[str, dict] = {}
+        if bm25_only_cids:
+            try:
+                extra_sql = text("""
+                    SELECT c.id, c.content, c.document_id, c.meta, d.title
+                    FROM chunks c
+                    JOIN documents d ON c.document_id = d.id
+                    WHERE c.id = ANY(:ids)
+                """)
+                extra_res = await self.db.execute(extra_sql, {"ids": bm25_only_cids})
+                for row in extra_res.mappings().all():
+                    extra_row_map[str(row["id"])] = row
+            except Exception as e:
+                logger.warning(f"[RAG][trace={trace_id}] 补充查询 BM25 独有 chunk 失败: {e}")
+
+        # ===== 4. 标准 RRF(仅用排名, 不使用原始 score) =====
         t_stage = time.time()
-        bm25_query = query_text or ""
-        bm25_results = self._bm25_score(bm25_query, corpus, top_k=vector_top_k)
-        timings["bm25_ms"] = int((time.time() - t_stage) * 1000)
-        logger.info(f"[RAG] BM25结果: {len(bm25_results)}条")
-
-        # 第二阶段: BM25 零分结果不参与 RRF 融合(也不分配 bm25_rank)。
-        # 零分文档排序在末尾, 剔除后剩余结果保持原 1-based 排名不变。
-        bm25_valid = _filter_valid_bm25_results(bm25_results)
-        timings["bm25_valid_count"] = len(bm25_valid)
-        timings["bm25_positive_count"] = len(bm25_valid)
-        if len(bm25_valid) != len(bm25_results):
-            logger.info(
-                f"[RAG] BM25 零分剔除: {len(bm25_results) - len(bm25_valid)} 条零分结果不参与融合"
-            )
-
-        # 4. 向量分数与排名（按 distance 升序）
-        logger.info(f"[RAG] 构建RRF融合")
-        t_stage = time.time()
-
-        vector_scored = []
-        for i, row in enumerate(rows):
-            raw = row.get("distance")
-            dist = float(raw) if raw is not None else 1.0
-            sim = 1.0 - dist if raw is not None else 0.0
-            vector_scored.append((i, dist, sim))
-        vector_scored.sort(key=lambda x: x[1])  # distance 升序
-        vector_rank_map: dict[int, tuple[float, float, int]] = {}
-        for rank, (i, dist, sim) in enumerate(vector_scored, 1):
-            vector_rank_map[i] = (dist, sim, rank)
-
-        # RRF 融合只接收 (doc_idx, 融合分); doc_idx 仍是 row 序号
-        vector_results = [(i, sim) for (i, _dist, sim) in vector_scored]
-
-        # 5. RRF 融合（仅用于候选排序，不代表真实相关度）
-        # 标准 RRF: 仅用排名, 零分 BM25 已剔除(bm25_valid)
-        combined = self._rrf_fusion(vector_results, bm25_valid, k=settings.rrf_k)
+        vector_for_rrf = [
+            (cid_to_idx[cid], sim)
+            for cid, (_d, sim, _r) in sorted(vector_rank_map.items(), key=lambda kv: kv[1][2])
+        ]
+        bm25_for_rrf = [(cid_to_idx[cid], score) for cid, score in bm25_results]
+        combined = self._rrf_fusion(vector_for_rrf, bm25_for_rrf, k=settings.rrf_k)
         timings["rrf_ms"] = int((time.time() - t_stage) * 1000)
-        logger.info(f"[RAG] RRF融合完成, combined={len(combined)}")
+        timings["rrf_candidate_count_before_limit"] = len(combined)
+        combined = combined[:rrf_top_k]
+        timings["rrf_candidate_count"] = len(combined)
+        logger.info(
+            f"[RAG][trace={trace_id}] RRF 融合完成, before_limit="
+            f"{timings['rrf_candidate_count_before_limit']} after_limit={len(combined)}"
+        )
 
-        # 6. 构建候选集（按 rrf_score 排序；此处不截取 top_k）
+        # ===== 5. 构建候选集 =====
         candidates: list[RetrievedChunk] = []
-        used_ids: set = set()
-        bm25_map: dict[int, tuple[float, int]] = {
-            idx: (score, rank) for rank, (idx, score) in enumerate(bm25_valid, 1)
+        bm25_rank_map = {
+            cid: (score, rank) for rank, (cid, score) in enumerate(bm25_results, 1)
         }
         rrf_rank = 0
-        for doc_idx, rrf_score in combined:
-            if doc_idx < len(rows):
-                row = rows[doc_idx]
-                cid = row["id"]
-                if cid in used_ids:
-                    continue
-                used_ids.add(cid)
-                rrf_rank += 1
-                dist, sim, vrank = vector_rank_map.get(doc_idx, (None, None, None))
-                bm25_score, bm25_rank = bm25_map.get(doc_idx, (None, None))
-                candidates.append(
-                    RetrievedChunk(
-                        chunk_id=str(cid),
-                        content=row["content"],
-                        document_id=str(row["document_id"]),
-                        document_title=row["title"],
-                        score=float(rrf_score),
-                        metadata=row["meta"] or {},
-                        rank=rrf_rank,
-                        vector_distance=dist,
-                        vector_score=sim,
-                        vector_rank=vrank,
-                        bm25_score=bm25_score,
-                        bm25_rank=bm25_rank,
-                        rrf_score=float(rrf_score),
-                        rrf_rank=rrf_rank,
-                    )
+        for idx, rrf_score in combined:
+            cid = all_cids[idx]
+            row = vector_row_map.get(cid) or extra_row_map.get(cid)
+            if row is None:
+                continue
+            vinfo = vector_rank_map.get(cid)
+            binfo = bm25_rank_map.get(cid)
+            channels: list[str] = []
+            if vinfo:
+                channels.append("vector")
+            if binfo:
+                channels.append("bm25")
+            rrf_rank += 1
+            candidates.append(
+                RetrievedChunk(
+                    chunk_id=cid,
+                    content=row["content"],
+                    document_id=str(row["document_id"]),
+                    document_title=row["title"],
+                    score=float(rrf_score),
+                    metadata=row["meta"] or {},
+                    rank=rrf_rank,
+                    vector_distance=vinfo[0] if vinfo else None,
+                    vector_score=vinfo[1] if vinfo else None,
+                    vector_rank=vinfo[2] if vinfo else None,
+                    bm25_score=binfo[0] if binfo else None,
+                    bm25_rank=binfo[1] if binfo else None,
+                    rrf_score=float(rrf_score),
+                    rrf_rank=rrf_rank,
+                    matched_channels=channels,
+                    matched_terms=bm25_term_map.get(cid, []),
                 )
+            )
 
-        # 7. Rerank 精排 + threshold 过滤
+        # ===== 6. Rerank 精排 + threshold =====
         should_rerank, actual_candidate_k, rerank_reason = self._decide_rerank(
             query_text=query_text,
             top_k=top_k,
@@ -651,13 +828,6 @@ class Retriever:
         timings["rerank_candidate_k"] = actual_candidate_k
         timings["rerank_reason"] = rerank_reason
         timings["rerank_decision"] = "on" if should_rerank else "off"
-
-        trace_id = uuid.uuid4().hex
-        timings["trace_id"] = trace_id
-        timings["vector_result_count"] = len(rows)
-        timings["bm25_result_count"] = len(bm25_results)
-        timings["bm25_raw_count"] = len(bm25_results)
-        timings["rrf_candidate_count"] = len(candidates)
 
         reranked_pairs: list[tuple[int, Optional[float]]] | None = None
         if should_rerank:
@@ -673,9 +843,6 @@ class Retriever:
             results = apply_rerank_scores(candidates, reranked_pairs, threshold)
             timings["rerank_input_count"] = min(actual_candidate_k, len(candidates))
             timings["rerank_output_count"] = len([p for p in reranked_pairs if p[1] is not None])
-            # threshold_passed_count = 通过 threshold 的候选数(在最终 top_k 截取之前),
-            # 即被写回 rerank_score 且 >= threshold 的候选。注意不能用 len(results),
-            # 因为 results 此时是全部通过 threshold 的 rerank 结果, 尚未经 top_k 截取/后处理。
             timings["threshold_passed_count"] = len([
                 c for c in candidates
                 if c.rerank_score is not None and c.rerank_score >= threshold
@@ -683,8 +850,10 @@ class Retriever:
             logger.info(
                 f"[RAG][trace={trace_id}] rerank=on 完成 | "
                 f"query={query_text!r} top_k={top_k} threshold={threshold} | "
-                f"vector={len(rows)} bm25={len(bm25_results)} rrf_candidates={len(candidates)} | "
-                f"rerank_input={timings['rerank_input_count']} rerank_output={timings['rerank_output_count']} | "
+                f"vector={len(vector_rows)} bm25={len(bm25_results)} "
+                f"rrf_candidates={len(candidates)} | "
+                f"rerank_input={timings['rerank_input_count']} "
+                f"rerank_output={timings['rerank_output_count']} | "
                 f"threshold_passed={timings['threshold_passed_count']}"
             )
         else:
@@ -695,13 +864,11 @@ class Retriever:
             results = finalize_rrf(candidates)
             timings["rerank_input_count"] = 0
             timings["rerank_output_count"] = 0
-            # rrf 路径不执行 threshold, 此处全部候选视为通过
             timings["threshold_passed_count"] = len(results)
 
-        # 统一后处理: 去重 → 同文档限制 → final top_k → 重新编号。
+        # ===== 7. 统一后处理(去重 → 同文档限制 → final top_k → 重编号) =====
         # 位置在 Rerank → threshold 之后、接口返回之前;
         # threshold_passed_count 已在上方统计(指 top_k 截取前通过数), 不受后处理影响。
-        timings["max_results_per_doc"] = settings.max_results_per_doc
         pre_pp = len(results)
         results, pp_stats = _post_process_results(
             results,
@@ -726,19 +893,22 @@ class Retriever:
                 f"top_k={top_k} ({pre_pp} -> {len(results)})"
             )
 
-        # 每条结果记 trace（不记正文）
+        # 每条结果记 trace(不记正文)
         for c in results:
             logger.info(
                 f"[RAG][trace={trace_id}] result doc={c.document_id} chunk={c.chunk_id} | "
+                f"channels={c.matched_channels} | "
                 f"vector_rank={c.vector_rank} bm25_rank={c.bm25_rank} | "
                 f"rrf_score={c.rrf_score} rrf_rank={c.rrf_rank} | "
-                f"rerank_score={c.rerank_score} final_rank={c.final_rank} score_type={c.score_type}"
+                f"rerank_score={c.rerank_score} final_rank={c.final_rank} "
+                f"score_type={c.score_type}"
             )
 
         timings["retrieval_total_ms"] = (
-            int(timings["vector_sql_ms"]) + int(timings["bm25_ms"]) + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
+            int(timings["vector_sql_ms"]) + int(timings["bm25_ms"])
+            + int(timings["rrf_ms"]) + int(timings["rerank_ms"])
         )
-        logger.info(f"[RAG][trace={trace_id}] Hybrid完成，返回{len(results)}条")
+        logger.info(f"[RAG][trace={trace_id}] 双路检索完成, 返回{len(results)}条")
         return (results, timings) if return_timings else results
 
     async def _run_rerank(
@@ -879,8 +1049,14 @@ class Retriever:
         return result.scalar() or 0
 
     async def delete_chunks_by_document(self, doc_id: str) -> int:
-        """删除文档的chunks"""
+        """删除文档的chunks, 并同步清理词法索引(失败记录不静默, FK 级联兜底)"""
         doc_uuid = uuid.UUID(doc_id)
+        # 显式清理词法索引(级联删除为兜底); 失败记录日志但不阻断主删除
+        try:
+            from core.rag.lexical_index import delete_by_document_async
+            await delete_by_document_async(self.db, doc_uuid)
+        except Exception as e:
+            logger.error(f"[RAG] 清理文档词法索引失败 doc={doc_id}: {e}")
         query = Chunk.__table__.delete().where(Chunk.document_id == doc_uuid)
         result = await self.db.execute(query)
         await self.db.commit()

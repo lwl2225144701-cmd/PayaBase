@@ -562,6 +562,15 @@ def batch_insert_chunks(
 
     try:
         with get_sync_engine().begin() as conn:
+            # 词法索引: 查文档标题/kb(同一事务内)
+            _doc_row = conn.execute(
+                text("SELECT knowledge_base_id, title FROM documents WHERE id=:id"),
+                {"id": document_id},
+            ).mappings().first()
+            _kb_id = str(_doc_row["knowledge_base_id"]) if _doc_row else None
+            _doc_title = _doc_row["title"] if _doc_row else ""
+            _lexical_chunks: list = []
+
             # 0. 先删除该文档的旧 chunk（重索引时必须清理，否则新旧向量并存导致检索混乱）
             conn.execute(
                 text("DELETE FROM chunks WHERE document_id=:doc_id"),
@@ -571,7 +580,10 @@ def batch_insert_chunks(
             # 1. 批量插入 chunks
             for chunk_data, vector in zip(chunks_data, vectors):
                 chunk_id = chunk_data.get("chunk_id") or str(uuid.uuid4())
-                
+                _lexical_chunks.append(
+                    (chunk_id, _doc_title, chunk_data["content"], chunk_data.get("meta", {}))
+                )
+
                 conn.execute(
                     text("""
                         INSERT INTO chunks (id, document_id, content, summary, hypothetical_questions, chunk_type, vector, meta, token_count)
@@ -589,7 +601,16 @@ def batch_insert_chunks(
                         "token_count": chunk_data.get("token_count", 0),
                     }
                 )
-            
+
+            # 1.5 词法索引(同一事务: 幂等删旧写新)
+            if _kb_id and _lexical_chunks:
+                try:
+                    from core.rag.lexical_index import index_document_sync
+                    index_document_sync(conn, document_id, _kb_id, _lexical_chunks)
+                except Exception as _e:
+                    logger.error(f"[Indexing] 词法索引写入失败 doc={document_id}: {_e}")
+                    raise
+
             # 2. 更新文档状态为 ready（在同一事务中）
             conn.execute(
                 text("""

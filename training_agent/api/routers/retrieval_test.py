@@ -1,15 +1,15 @@
-import uuid
-import time
 import logging
+import time
+import uuid
 
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
 
-from api.deps import DBSession, CurrentUser
+from api.deps import CurrentUser, DBSession
 from api.schemas.common import Response
-from core.permissions import require_visible_kb
-from core.exceptions import ValidationException
 from core.embedding.client import EmbeddingClient
+from core.exceptions import ValidationException
+from core.permissions import require_visible_kb
 from core.rag.retriever import Retriever
 
 logger = logging.getLogger(__name__)
@@ -122,6 +122,9 @@ async def retrieval_test(
                 "rerank_score": getattr(chunk, "rerank_score", None),
                 "rerank_rank": getattr(chunk, "rerank_rank", None),
             },
+            # 双路召回来源: ["vector"] / ["bm25"] / ["vector", "bm25"]
+            "matched_channels": list(getattr(chunk, "matched_channels", []) or []),
+            "matched_terms": list(getattr(chunk, "matched_terms", []) or []),
             "rank": getattr(chunk, "final_rank", idx) or idx,
             "metadata": getattr(chunk, "metadata", {}) or {},
         })

@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     # Rerank
     rerank_service_url: str = "http://rerank-service:8003"
     rerank_override: str = "auto"  # auto|on|off
-    rerank_candidate_k: int = 5
+    rerank_candidate_k: int = 20  # Rerank 仅处理 RRF TopN(从 RRF 候选 Top30 中取前 20)
     rerank_cache_ttl_sec: int = 120
     rerank_policy_version: str = "v1"
     rerank_model: str = "BAAI/bge-reranker-base"
@@ -73,6 +73,19 @@ class Settings(BaseSettings):
 
     # RRF 融合 (标准 Reciprocal Rank Fusion: RRF = sum(1/(k+rank)), 仅用排名)
     rrf_k: int = 60
+
+    # 词法索引(第三阶段: 独立全库 BM25 召回)
+    lexical_index_version: str = "v1"
+    lexical_max_terms_per_chunk: int = 2000
+    lexical_max_text_length: int = 200000
+
+    # 标准 BM25 全库 SQL 召回
+    bm25_k1: float = 1.5
+    bm25_b: float = 0.75
+    bm25_max_query_terms: int = 32
+    vector_recall_top_k: int = 40
+    bm25_recall_top_k: int = 40
+    rrf_candidate_top_k: int = 30
 
     # 检索结果后处理
     # 同文档结果数量上限: 每个 document_id 在最终结果中最多保留 N 条; 0 = 不限制。

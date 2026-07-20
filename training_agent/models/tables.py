@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, Index
 from sqlalchemy.dialects.postgresql import UUID
 from pgvector.sqlalchemy import Vector
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -112,6 +112,48 @@ class Chunk(Base):
     token_count: Mapped[int] = mapped_column(Integer, default=0)
 
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
+
+
+class ChunkLexicalDocument(Base):
+    """词法索引文档表: 每个 chunk 一行, 记录 token 数/内容哈希/索引版本。
+
+    与 chunks/documents/knowledge_bases 通过外键级联删除关联。
+    """
+    __tablename__ = "chunk_lexical_documents"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False
+    )
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    token_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    index_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ChunkLexicalTerm(Base):
+    """词法索引词项表: (chunk_id, knowledge_base_id, term) 复合主键, 记录词频。"""
+    __tablename__ = "chunk_lexical_terms"
+
+    chunk_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chunks.id", ondelete="CASCADE"), primary_key=True
+    )
+    knowledge_base_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), primary_key=True
+    )
+    term: Mapped[str] = mapped_column(String(255), primary_key=True)
+    term_frequency: Mapped[int] = mapped_column(Integer, default=1)
+
+    __table_args__ = (
+        Index("ix_chunk_lexical_terms_kb_term", "knowledge_base_id", "term"),
+        Index("ix_chunk_lexical_terms_chunk", "chunk_id"),
+    )
 
 
 class Conversation(Base):

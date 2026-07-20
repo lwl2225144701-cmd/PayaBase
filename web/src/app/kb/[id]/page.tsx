@@ -1587,6 +1587,10 @@ type RetrievalChunk = {
   score_type?: "rerank" | "rrf";
   /** 各路分数拆解, 空值统一为 null */
   score_breakdown?: ScoreBreakdown;
+  /** 命中通道: 向量 / BM25(可同时命中) */
+  matched_channels?: string[];
+  /** BM25 命中的查询词 */
+  matched_terms?: string[];
   rank: number;
   metadata: Record<string, any>;
 };
@@ -2082,6 +2086,21 @@ function RetrievalTestPanel({ kbId }: { kbId: string }) {
                         <span className="truncate text-sm font-medium text-foreground" title={item.document_title}>
                           {item.document_title || "未知文档"}
                         </span>
+                        {/* 命中通道徽标: 向量 / BM25 / 向量+BM25 */}
+                        {item.matched_channels && item.matched_channels.length > 0 && (
+                          <span className="flex shrink-0 items-center gap-1">
+                            {item.matched_channels.includes("vector") && (
+                              <span className="rounded bg-blue-500/10 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+                                向量
+                              </span>
+                            )}
+                            {item.matched_channels.includes("bm25") && (
+                              <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400">
+                                BM25
+                              </span>
+                            )}
+                          </span>
+                        )}
                       </div>
                       <div className="flex shrink-0 items-center gap-1.5">
                         <button

@@ -10,8 +10,11 @@
 
 from __future__ import annotations
 
+import logging
 import uuid
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
 from uuid import UUID
 
 from sqlalchemy import String, delete, func, or_, select, update
@@ -278,9 +281,35 @@ class ChunkRepositoryImpl:
                 )
             )
         await self.session.flush()
+        # 词法索引重建(同一 UoW 事务): 幂等删旧写新
+        try:
+            from core.rag.lexical_index import index_document_async
+            kb_row = await self.session.execute(
+                select(Document.knowledge_base_id).where(Document.id == document_id)
+            )
+            kb_id = kb_row.scalar_one_or_none()
+            if kb_id:
+                lexical_chunks = [
+                    (
+                        chunk_data.get("chunk_id") or str(uuid.uuid4()),
+                        (chunk_data.get("meta") or {}).get("title", ""),
+                        chunk_data["content"],
+                        chunk_data.get("meta", {}),
+                    )
+                    for chunk_data in chunks
+                ]
+                await index_document_async(self.session, document_id, str(kb_id), lexical_chunks)
+        except Exception as e:
+            logger.error(f"[Repo] 词法索引重建失败 doc={document_id}: {e}")
         return len(chunks)
 
     async def delete_by_document(self, document_id: UUID) -> int:
+        # 同步清理词法索引(FK 级联兜底); 失败记录不静默
+        try:
+            from core.rag.lexical_index import delete_by_document_async
+            await delete_by_document_async(self.session, document_id)
+        except Exception as e:
+            logger.error(f"[Repo] 清理文档词法索引失败 doc={document_id}: {e}")
         result = await self.session.execute(
             delete(Chunk)
             .where(Chunk.document_id == document_id)
