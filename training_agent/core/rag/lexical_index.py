@@ -128,19 +128,31 @@ def index_document_sync(conn, document_id, kb_id, chunks, index_version=None):
 
 
 async def delete_by_document_async(db, document_id):
-    """显式清理文档词法索引(async); 失败记录日志(不静默)。FK 级联为兜底。"""
-    try:
-        await db.execute(
-            text("DELETE FROM chunk_lexical_terms WHERE document_id = CAST(:doc_id AS uuid)"),
-            {"doc_id": document_id},
-        )
-        await db.execute(
-            text("DELETE FROM chunk_lexical_documents WHERE document_id = CAST(:doc_id AS uuid)"),
-            {"doc_id": document_id},
-        )
-    except Exception as e:
-        logger.error(f"[LexicalIndex] 删除文档词法索引失败 doc={document_id}: {e}")
-        raise
+    """显式清理文档词法索引(async)。
+
+    chunk_lexical_terms **没有** document_id 字段, 只能通过 chunk_lexical_documents
+    子查询定位该文档的 chunk_id 再删除 terms; chunk_lexical_documents 自身有
+    document_id, 可直接删除。
+
+    失败必须 **抛出**: PostgreSQL 在 SQL 报错后会 abort 当前事务, 此时禁止再执行
+    任何后续语句(否则报 "current transaction is aborted")。FK 级联(ON DELETE
+    CASCADE)是真正的兜底清理手段, 显式删除只是提前回收空间, 失败就让 UoW 回滚。
+    """
+    # terms 通过 documents 子查询定位(terms 表无 document_id 列)
+    await db.execute(
+        text(
+            "DELETE FROM chunk_lexical_terms "
+            "WHERE chunk_id IN ("
+            "  SELECT chunk_id FROM chunk_lexical_documents "
+            "  WHERE document_id = CAST(:doc_id AS uuid)"
+            ")"
+        ),
+        {"doc_id": document_id},
+    )
+    await db.execute(
+        text("DELETE FROM chunk_lexical_documents WHERE document_id = CAST(:doc_id AS uuid)"),
+        {"doc_id": document_id},
+    )
 
 
 async def delete_by_kb_async(db, kb_id):

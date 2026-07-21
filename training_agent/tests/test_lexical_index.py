@@ -66,6 +66,26 @@ def test_tokenize_filters_stopwords_only():
     assert "在" not in low
 
 
+# 6b. 保护词去重: 重叠正则命中同一 span 只保留一次 -------------------------------
+def test_protect_token_term_frequency_is_one_when_single_occurrence():
+    # IEC61850 / IEC-104 / RCS-931 / 192.168.1.1 / v2.1.3 / 0x8001 在原文只出现
+    # 一次时, 索引词频必须为 1(多个正则可能命中同一 span, 需按 span 去重)。
+    text = (
+        "装置采用 IEC61850 与 IEC-104 通信, "
+        "RCS-931 保护, 地址 192.168.1.1, 版本 v2.1.3, 错误码 0x8001"
+    )
+    tf = tokenize_document(text)
+    for tok in ["iec61850", "iec-104", "rcs-931", "192.168.1.1", "v2.1.3", "0x8001"]:
+        assert tf.get(tok) == 1, f"{tok} 的词频应为 1, 实得 {tf.get(tok)}"
+
+
+def test_overlapping_protect_patterns_dont_double_count():
+    # IEC61850 同时被 `[A-Za-z]{1,6}-?\\d{2,5}` 与 `IEC[-\\s]?\\d{2,5}` 命中同一 span,
+    # 必须只计一次; 不同 span 的相同 token(出现两次)词频为 2, 不是 4。
+    assert tokenize_document("IEC61850 通信 IEC61850").get("iec61850") == 2
+    assert tokenize_document("IEC61850").get("iec61850") == 1
+
+
 # 2. 索引文本构建: 只索引 metadata 白名单 ----------------------------------------
 def test_build_lexical_text_uses_whitelist_meta():
     meta = {

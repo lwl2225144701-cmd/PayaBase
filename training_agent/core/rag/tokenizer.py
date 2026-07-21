@@ -54,17 +54,28 @@ def _nfkc_lower(text: str) -> str:
 
 
 def _extract_protect_tokens(text: str):
-    """抽取保护 token, 返回 (保护token列表, 剩余待 jieba 文本)。"""
+    """抽取保护 token, 返回 (保护token列表, 剩余待 jieba 文本)。
+
+    关键: 多个正则可能命中同一段文本(如 IEC61850 同时被
+    `[A-Za-z]{1,6}-?\\d{2,5}` 与 `IEC[-\\s]?\\d{2,5}` 命中), 必须按 **span 去重**,
+    同一 span 只保留一次, 否则重复计数会抬高词频(tf)。
+    去重基于 span 而非 token 文本: 不同 span 的相同 token(如 "RCS-931 RCS-931")
+    仍各自保留, 词频正确为 2。
+    """
     protected: list[str] = []
-    spans: list[tuple[int, int]] = []
+    accepted: list[tuple[int, int]] = []
     for pat in _PROTECT_PATTERNS:
         for m in re.finditer(pat, text, flags=re.IGNORECASE):
+            s, e = m.span()
+            # 跳过与已接受 span 重叠的匹配(多个正则命中同 span 只保留一次)
+            if any(not (e <= a_s or s >= a_e) for (a_s, a_e) in accepted):
+                continue
+            accepted.append((s, e))
             protected.append(m.group(0).lower())
-            spans.append(m.span())
-    spans.sort()
+    accepted.sort()
     remaining_parts: list[str] = []
     last = 0
-    for s, e in spans:
+    for s, e in accepted:
         if s > last:
             remaining_parts.append(text[last:s])
         last = e

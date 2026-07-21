@@ -259,17 +259,29 @@ class ChunkRepositoryImpl:
 
         chunks 字段：content(必填), summary, hypothetical_questions,
         chunk_type, vector, meta, token_count, chunk_id。
+
+        UUID 一致性铁律：每条 chunk 只生成一次 chunk_id，ORM Chunk 与 lexical_chunks
+        必须复用同一个 ID；词法索引异常必须向上抛出由 UoW 回滚，禁止吞掉后继续提交
+        "chunk 已写但词法索引缺失"的损坏事务。
         """
         await self.session.execute(
             delete(Chunk)
             .where(Chunk.document_id == document_id)
             .execution_options(synchronize_session=False)
         )
+        lexical_chunks: list[tuple] = []
         for chunk_data in chunks:
-            chunk_id = chunk_data.get("chunk_id") or str(uuid.uuid4())
+            # 每条 chunk 只生成一次 chunk_id, ORM 与词法索引复用同一 ID
+            raw_id = chunk_data.get("chunk_id")
+            if isinstance(raw_id, uuid.UUID):
+                chunk_id = raw_id
+            elif isinstance(raw_id, str) and raw_id:
+                chunk_id = uuid.UUID(raw_id)
+            else:
+                chunk_id = uuid.uuid4()
             self.session.add(
                 Chunk(
-                    id=uuid.UUID(chunk_id) if isinstance(chunk_id, str) else chunk_id,
+                    id=chunk_id,
                     document_id=document_id,
                     content=chunk_data["content"],
                     summary=(chunk_data.get("summary") or "")[:500],
@@ -280,36 +292,34 @@ class ChunkRepositoryImpl:
                     token_count=chunk_data.get("token_count", 0),
                 )
             )
+            lexical_chunks.append((
+                str(chunk_id),
+                (chunk_data.get("meta") or {}).get("title", ""),
+                chunk_data["content"],
+                chunk_data.get("meta", {}),
+            ))
         await self.session.flush()
         # 词法索引重建(同一 UoW 事务): 幂等删旧写新
-        try:
-            from core.rag.lexical_index import index_document_async
-            kb_row = await self.session.execute(
-                select(Document.knowledge_base_id).where(Document.id == document_id)
-            )
-            kb_id = kb_row.scalar_one_or_none()
-            if kb_id:
-                lexical_chunks = [
-                    (
-                        chunk_data.get("chunk_id") or str(uuid.uuid4()),
-                        (chunk_data.get("meta") or {}).get("title", ""),
-                        chunk_data["content"],
-                        chunk_data.get("meta", {}),
-                    )
-                    for chunk_data in chunks
-                ]
-                await index_document_async(self.session, document_id, str(kb_id), lexical_chunks)
-        except Exception as e:
-            logger.error(f"[Repo] 词法索引重建失败 doc={document_id}: {e}")
+        from core.rag.lexical_index import index_document_async
+        kb_row = await self.session.execute(
+            select(Document.knowledge_base_id).where(Document.id == document_id)
+        )
+        kb_id = kb_row.scalar_one_or_none()
+        if kb_id:
+            # 词法索引异常必须向上抛出, 由 UoW 回滚整个事务;
+            # 禁止吞掉后继续提交"chunk 已写但词法索引缺失"的损坏状态。
+            await index_document_async(self.session, document_id, str(kb_id), lexical_chunks)
         return len(chunks)
 
     async def delete_by_document(self, document_id: UUID) -> int:
-        # 同步清理词法索引(FK 级联兜底); 失败记录不静默
-        try:
-            from core.rag.lexical_index import delete_by_document_async
-            await delete_by_document_async(self.session, document_id)
-        except Exception as e:
-            logger.error(f"[Repo] 清理文档词法索引失败 doc={document_id}: {e}")
+        """删除文档的所有 chunk(FK 级联自动清理词法索引)。
+
+        显式清理词法索引若失败必须抛出, 禁止在已 abort 的事务上继续提交。
+        chunk_lexical_* 的 ON DELETE CASCADE 是真正的兜底清理。
+        """
+        from core.rag.lexical_index import delete_by_document_async
+        # 显式清理词法索引(失败直接抛出, 由 UoW 回滚); FK 级联为兜底
+        await delete_by_document_async(self.session, document_id)
         result = await self.session.execute(
             delete(Chunk)
             .where(Chunk.document_id == document_id)

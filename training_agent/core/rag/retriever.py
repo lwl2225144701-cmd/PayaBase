@@ -26,6 +26,38 @@ logger = logging.getLogger(__name__)
 
 _rerank_cache = get_redis_client(db=3)
 
+# metadata 过滤白名单: c.meta->>'<key>' 只允许这些 key 进入 SQL, 杜绝动态 SQL 注入。
+# 不在白名单内的 filter key 直接忽略(不拼进 SQL)。
+FILTER_META_KEYS = {
+    "model", "model_no", "device_model", "version", "versions",
+    "keyword", "keywords", "standard", "protocol", "protocol_no",
+}
+# 仅检索已索引(ready)文档的 chunk: 向量召回用 `c.vector IS NOT NULL` 已是隐式信号,
+# BM25 无 vector 列, 故显式要求文档状态为 ready, 两路过滤保持一致。
+INDEXED_DOC_STATUS = "ready"
+
+
+def _compile_filters(filters: Optional[dict]) -> tuple[list[tuple[str, object]], Optional[str]]:
+    """把用户 filters 编译为安全结构, 杜绝动态 SQL 注入。
+
+    Returns:
+        meta_items: [(whitelisted_key, value), ...] 仅白名单内的 meta key 进入。
+        doc_id:     UUID 字符串(来自 filters['document_id'])或 None。
+    未列入白名单的 key 直接忽略(不拼进 SQL), 因此无法注入任意列/操作符。
+    """
+    meta_items: list[tuple[str, object]] = []
+    doc_id: Optional[str] = None
+    if not filters:
+        return meta_items, doc_id
+    for raw_key, value in filters.items():
+        if raw_key == "document_id":
+            doc_id = str(value)
+            continue
+        if raw_key in FILTER_META_KEYS:
+            meta_items.append((raw_key, value))
+        # 其余 key 忽略(防注入)
+    return meta_items, doc_id
+
 
 @dataclass
 class RetrievedChunk:
@@ -399,23 +431,55 @@ class Retriever:
         return sorted(rrf_scores.items(), key=lambda x: x[1], reverse=True)
 
     async def _bm25_search_sql(
-        self, kb_uuid: uuid.UUID, terms: list[str], top_k: int
+        self,
+        kb_uuid: uuid.UUID,
+        terms: list[str],
+        top_k: int,
+        doc_uuid: Optional[uuid.UUID] = None,
+        meta_items: Optional[list[tuple[str, object]]] = None,
+        doc_status: str = INDEXED_DOC_STATUS,
     ) -> list[dict]:
         """标准 BM25 全库 SQL 召回(独立通道, 不读取向量 corpus)。
 
         公式:
             idf = ln(1 + (N - df + 0.5) / (df + 0.5))
             score = Σ idf * tf*(k1+1) / (tf + k1*(1 - b + b*dl/avgdl))
-        N / avgdl / df 均限定在当前 knowledge_base_id。
+        N / avgdl / df 均限定在当前 knowledge_base_id(集合级, 不受 doc_id/meta 过滤
+        影响, 保证 IDF 口径正确)。
         仅返回 score > 0; 相同分数按 chunk_id 稳定排序。
         请求阶段不加载全库 Chunk 到 Python(全在 DB 内聚合)。
+
+        一致性过滤(与向量召回一致): document_id / 文档状态(ready) / metadata 白名单。
+        这些 key 来自白名单常量或固定值, 非用户原始输入, 杜绝动态 SQL 注入。
         """
         if not terms:
             return []
 
         k1 = float(settings.bm25_k1)
         b = float(settings.bm25_b)
-        sql = text("""
+
+        # 一致性过滤片段(白名单 key + 固定值, 安全, 非用户原始输入)
+        bm25_extra_params: dict = {"doc_status": doc_status}
+        extra_joins = [
+            "JOIN documents doc ON doc.id = d.document_id AND doc.status = :doc_status"
+        ]
+        extra_wheres: list[str] = []
+        if doc_uuid is not None:
+            extra_wheres.append("d.document_id = CAST(:doc_id AS uuid)")
+            bm25_extra_params["doc_id"] = doc_uuid
+        if meta_items:
+            extra_joins.append("JOIN chunks c ON c.id = d.chunk_id")
+            for i, (key, value) in enumerate(meta_items):
+                extra_wheres.append(f"c.meta->>'{key}' = :meta_{i}_value")
+                bm25_extra_params[f"meta_{i}_value"] = value
+        extra_join_sql = "\n                 ".join(extra_joins)
+        extra_where_sql = (
+            "\n                  AND " + "\n                  AND ".join(extra_wheres)
+            if extra_wheres
+            else ""
+        )
+
+        sql = text(f"""
             WITH kb_stats AS (
                 SELECT
                     COUNT(*) AS n,
@@ -439,8 +503,10 @@ class Retriever:
                 JOIN chunk_lexical_documents d
                   ON d.chunk_id = t.chunk_id
                  AND d.knowledge_base_id = t.knowledge_base_id
+                 {extra_join_sql}
                 WHERE t.knowledge_base_id = :kb_id
                   AND t.term = ANY(:terms)
+                  {extra_where_sql}
             ),
             scored AS (
                 SELECT
@@ -476,6 +542,7 @@ class Retriever:
                 "k1": k1,
                 "b": b,
                 "limit": top_k,
+                **bm25_extra_params,
             },
         )
         rows = result.mappings().all()
@@ -516,10 +583,13 @@ class Retriever:
         query_vector = await EmbeddingClient().embed_single(query_text)
         timings["embedding_ms"] = int((time.time() - t0) * 1000)
         if not query_vector:
-            logger.warning("[RAG] query 向量化失败,返回空结果")
-            return ([], timings) if return_timings else []
+            # Embedding 失败/返回空向量: 不得在此直接返回空。
+            # 置空后继续走 similarity_search, 让 BM25 独立召回(vector_status=error,
+            # degraded_mode=bm25_only); 只有向量与 BM25 都失败才返回空。
+            logger.warning("[RAG] query 向量化失败, 降级为 BM25 单路召回")
+            query_vector = None
 
-        if use_hyde and settings.hyde_enabled:
+        if use_hyde and settings.hyde_enabled and query_vector:
             try:
                 t_h = time.time()
                 hyde_doc = await self._generate_hyde(query_text)
@@ -629,6 +699,8 @@ class Retriever:
 
         kb_uuid = uuid.UUID(kb_id)
         logger.info(f"[RAG] 双路检索 - kb={kb_id}, top_k={top_k}, filters={filters}")
+        # filters 在向量/BM25 两路共用同一份编译结果, 保证过滤一致
+        meta_items, doc_id = _compile_filters(filters)
 
         vector_top_k = settings.vector_recall_top_k
         bm25_top_k = settings.bm25_recall_top_k
@@ -645,11 +717,22 @@ class Retriever:
                 raise ValueError("query_vector 为空")
             query_vector_str = "[" + ",".join(map(str, query_vector)) + "]"
             where_clauses = ["d.knowledge_base_id = :kb_id", "c.vector IS NOT NULL"]
-            params: dict = {"kb_id": kb_uuid, "query_vector": query_vector_str, "limit": vector_top_k}
-            if filters:
-                for key, value in filters.items():
-                    where_clauses.append(f"c.meta->>:key = :{key}_value")
-                    params[f"{key}_value"] = value
+            params: dict = {
+                "kb_id": kb_uuid,
+                "query_vector": query_vector_str,
+                "limit": vector_top_k,
+                "doc_status": INDEXED_DOC_STATUS,
+            }
+            # filters: 白名单 meta key + document_id + 文档状态, 禁止动态 SQL 注入。
+            for i, (key, value) in enumerate(meta_items):
+                # key 来自白名单常量, 非用户原始输入, 安全; value 以独立参数名绑定。
+                where_clauses.append(f"c.meta->>'{key}' = :meta_{i}_value")
+                params[f"meta_{i}_value"] = value
+            if doc_id:
+                where_clauses.append("c.document_id = CAST(:doc_id AS uuid)")
+                params["doc_id"] = uuid.UUID(doc_id)
+            # 仅检索已索引(ready)文档的 chunk, 与 BM25 通道保持一致
+            where_clauses.append("d.status = :doc_status")
             where_sql = " AND ".join(where_clauses)
             sql = text(f"""
                 SELECT
@@ -687,7 +770,17 @@ class Retriever:
             from core.rag.tokenizer import tokenize_query
             terms = tokenize_query(query_text)[: settings.bm25_max_query_terms]
             timings["bm25_query_term_count"] = len(terms)
-            bm25_rows = await self._bm25_search_sql(kb_uuid, terms, bm25_top_k) if terms else []
+            bm25_rows = (
+                await self._bm25_search_sql(
+                    kb_uuid,
+                    terms,
+                    bm25_top_k,
+                    doc_uuid=(uuid.UUID(doc_id) if doc_id else None),
+                    meta_items=meta_items,
+                )
+                if terms
+                else []
+            )
             timings["bm25_sql_ms"] = int((time.time() - t_stage) * 1000)
             timings["bm25_ms"] = timings["bm25_sql_ms"]
             for r in bm25_rows:
@@ -1054,14 +1147,16 @@ class Retriever:
         return result.scalar() or 0
 
     async def delete_chunks_by_document(self, doc_id: str) -> int:
-        """删除文档的chunks, 并同步清理词法索引(失败记录不静默, FK 级联兜底)"""
+        """删除文档的chunks, 并同步清理词法索引。
+
+        显式清理词法索引若失败必须抛出, 禁止在已 abort 的事务上继续提交(否则报
+        "current transaction is aborted")。chunk_lexical_* 的 ON DELETE CASCADE
+        才是真正的兜底; 这里不再吞掉异常。
+        """
         doc_uuid = uuid.UUID(doc_id)
-        # 显式清理词法索引(级联删除为兜底); 失败记录日志但不阻断主删除
-        try:
-            from core.rag.lexical_index import delete_by_document_async
-            await delete_by_document_async(self.db, doc_uuid)
-        except Exception as e:
-            logger.error(f"[RAG] 清理文档词法索引失败 doc={doc_id}: {e}")
+        from core.rag.lexical_index import delete_by_document_async
+        # 显式清理词法索引(失败直接抛出, 由上层回滚); FK 级联为兜底
+        await delete_by_document_async(self.db, doc_uuid)
         query = Chunk.__table__.delete().where(Chunk.document_id == doc_uuid)
         result = await self.db.execute(query)
         await self.db.commit()

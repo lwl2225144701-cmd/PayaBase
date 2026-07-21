@@ -20,26 +20,9 @@ RUNTIME_SCHEMA_PATCHES = [
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS progress INTEGER DEFAULT 0",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS error_message TEXT",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS indexed_at TIMESTAMP",
-    # 词法索引(第三阶段): 持久化倒排索引, 与 knowledge_bases/documents/chunks 级联删除
-    "CREATE TABLE IF NOT EXISTS chunk_lexical_documents ("
-    "    chunk_id UUID PRIMARY KEY REFERENCES chunks(id) ON DELETE CASCADE,"
-    "    knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,"
-    "    document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,"
-    "    token_count INTEGER DEFAULT 0,"
-    "    content_hash VARCHAR(64) NOT NULL,"
-    "    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',"
-    "    created_at TIMESTAMP,"
-    "    updated_at TIMESTAMP"
-    ")",
-    "CREATE TABLE IF NOT EXISTS chunk_lexical_terms ("
-    "    chunk_id UUID NOT NULL REFERENCES chunks(id) ON DELETE CASCADE,"
-    "    knowledge_base_id UUID NOT NULL REFERENCES knowledge_bases(id) ON DELETE CASCADE,"
-    "    term VARCHAR(255) NOT NULL,"
-    "    term_frequency INTEGER DEFAULT 1,"
-    "    PRIMARY KEY (chunk_id, knowledge_base_id, term)"
-    ")",
-    "CREATE INDEX IF NOT EXISTS ix_chunk_lexical_terms_kb_term ON chunk_lexical_terms (knowledge_base_id, term)",
-    "CREATE INDEX IF NOT EXISTS ix_chunk_lexical_terms_chunk ON chunk_lexical_terms (chunk_id)",
+    # 词法索引(第三阶段)的建表已收归正式 Alembic migration(0001_chunk_lexical),
+    # 不再依赖 runtime CREATE TABLE / 回填脚本自建表。Base.metadata.create_all 也会
+    # 按 ORM 模型预建这两张表, migration 用 IF NOT EXISTS 保证幂等并登记版本。
 ]
 
 
