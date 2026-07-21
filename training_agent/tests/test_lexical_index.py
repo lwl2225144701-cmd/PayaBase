@@ -201,9 +201,15 @@ async def test_bm25_search_sql_formula_in_query():
     await retriever._bm25_search_sql(__import__("uuid").UUID(int=0), ["保护"], 5)
     sql_text = str(retriever.db.execute.call_args.args[0])
     # 标准 BM25 公式片段必须存在(与文档一致)
-    assert "LN(1 + (s.n - m.df + 0.5) / (m.df + 0.5))" in sql_text
+    assert "LN(1 + (s.n - COALESCE(df.df, 0) + 0.5) / (COALESCE(df.df, 0) + 0.5))" in sql_text
     assert "(:k1 + 1)" in sql_text
     assert ":k1 * (1 - :b + :b *" in sql_text
+    assert "ARRAY_AGG(DISTINCT term)" in sql_text
+    # 回归: terms 必须作为普通 list 绑定, 不能用 sqlalchemy.dialects.postgresql.array 对象
+    # 否则 psycopg2 会报 can't adapt type 'array' 导致 BM25 整路被降级吞掉
+    params = retriever.db.execute.call_args.args[1]
+    assert params["terms"] == ["保护"]
+    assert type(params["terms"]).__name__ == "list"
 
 
 # 6. 回填幂等分类 ----------------------------------------------------------------

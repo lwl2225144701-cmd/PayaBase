@@ -412,7 +412,6 @@ class Retriever:
         """
         if not terms:
             return []
-        from sqlalchemy.dialects.postgresql import array as pg_array
 
         k1 = float(settings.bm25_k1)
         b = float(settings.bm25_b)
@@ -424,13 +423,18 @@ class Retriever:
                 FROM chunk_lexical_documents
                 WHERE knowledge_base_id = :kb_id
             ),
+            df AS (
+                SELECT term, COUNT(DISTINCT chunk_id) AS df
+                FROM chunk_lexical_terms
+                WHERE knowledge_base_id = :kb_id AND term = ANY(:terms)
+                GROUP BY term
+            ),
             matched AS (
                 SELECT
                     t.chunk_id,
                     t.term,
                     t.term_frequency AS tf,
-                    d.token_count AS dl,
-                    COUNT(*) OVER (PARTITION BY t.term) AS df
+                    d.token_count AS dl
                 FROM chunk_lexical_terms t
                 JOIN chunk_lexical_documents d
                   ON d.chunk_id = t.chunk_id
@@ -444,18 +448,19 @@ class Retriever:
                     m.term,
                     m.tf,
                     m.dl,
-                    m.df,
-                    (LN(1 + (s.n - m.df + 0.5) / (m.df + 0.5))
+                    COALESCE(df.df, 0) AS df,
+                    (LN(1 + (s.n - COALESCE(df.df, 0) + 0.5) / (COALESCE(df.df, 0) + 0.5))
                        * (m.tf * (:k1 + 1))
                        / (m.tf + :k1 * (1 - :b + :b * COALESCE(m.dl / NULLIF(s.avgdl, 0), 0))))
                     AS term_score
                 FROM matched m
                 CROSS JOIN kb_stats s
+                LEFT JOIN df ON df.term = m.term
             )
             SELECT
                 chunk_id,
                 SUM(term_score) AS bm25_score,
-                ARRAY_AGG(term) AS matched_terms,
+                ARRAY_AGG(DISTINCT term) AS matched_terms,
                 (SELECT n FROM kb_stats) AS n
             FROM scored
             GROUP BY chunk_id
@@ -467,7 +472,7 @@ class Retriever:
             sql,
             {
                 "kb_id": kb_uuid,
-                "terms": pg_array(terms),
+                "terms": terms,
                 "k1": k1,
                 "b": b,
                 "limit": top_k,
