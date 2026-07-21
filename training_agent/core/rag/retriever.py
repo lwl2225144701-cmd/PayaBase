@@ -753,7 +753,7 @@ class Retriever:
                     SELECT c.id, c.content, c.document_id, c.meta, d.title
                     FROM chunks c
                     JOIN documents d ON c.document_id = d.id
-                    WHERE c.id = ANY(:ids)
+                    WHERE c.id = ANY(CAST(:ids AS uuid[]))
                 """)
                 extra_res = await self.db.execute(extra_sql, {"ids": bm25_only_cids})
                 for row in extra_res.mappings().all():

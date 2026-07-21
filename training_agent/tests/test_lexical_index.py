@@ -129,6 +129,24 @@ def test_index_document_sync_single_transaction_order():
     assert {"chunk_id", "kb_id", "term", "tf"}.issubset(first.keys())
 
 
+# 4b. 回归: DELETE 的 ANY(:ids) 必须 CAST 成 uuid[], 否则实库报
+#     "operator does not exist: uuid = text"(mock 单测无法暴露, 需人工守住)
+def test_index_document_sync_delete_casts_ids_to_uuid_array():
+    chunks = [("c1", "主变保护", "RCS-931 差动保护", {"model": "RCS-931"})]
+    conn = MagicMock()
+    index_document_sync(conn, "doc1", "kb1", chunks, "v1")
+
+    delete_sqls = [
+        str(c.args[0])
+        for c in conn.execute.call_args_list
+        if str(c.args[0]).strip().upper().startswith("DELETE")
+    ]
+    # 两处 chunk_id 删除都必须带 CAST(:ids AS uuid[])
+    assert any("CAST(:ids AS uuid[])" in s for s in delete_sqls)
+    # 不允许出现裸的 ANY(:ids)(会触发 uuid=text)
+    assert all("ANY(:ids)" not in s.replace("CAST(:ids AS uuid[])", "") for s in delete_sqls)
+
+
 def test_extract_chunk_terms_respects_max_terms():
     # 构造超限文本: 用大量不同 token
     long_text = " ".join(f"词{i} 内容" for i in range(50))

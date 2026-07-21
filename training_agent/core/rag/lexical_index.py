@@ -84,12 +84,14 @@ def index_document_sync(conn, document_id, kb_id, chunks, index_version=None):
     if not chunk_ids:
         return 0
     # 1) 删除旧(同一事务)
+    # 注意: chunk_ids 是字符串列表, SQLAlchemy 绑定为 text[]; UUID 列与 text[] 比较
+    # 无隐式转换(会报 operator does not exist: uuid = text), 必须 CAST 成 uuid[]。
     conn.execute(
-        text("DELETE FROM chunk_lexical_terms WHERE chunk_id = ANY(:ids)"),
+        text("DELETE FROM chunk_lexical_terms WHERE chunk_id = ANY(CAST(:ids AS uuid[]))"),
         {"ids": chunk_ids},
     )
     conn.execute(
-        text("DELETE FROM chunk_lexical_documents WHERE chunk_id = ANY(:ids)"),
+        text("DELETE FROM chunk_lexical_documents WHERE chunk_id = ANY(CAST(:ids AS uuid[]))"),
         {"ids": chunk_ids},
     )
     # 2) 批量构建
@@ -129,11 +131,11 @@ async def delete_by_document_async(db, document_id):
     """显式清理文档词法索引(async); 失败记录日志(不静默)。FK 级联为兜底。"""
     try:
         await db.execute(
-            text("DELETE FROM chunk_lexical_terms WHERE document_id = :doc_id"),
+            text("DELETE FROM chunk_lexical_terms WHERE document_id = CAST(:doc_id AS uuid)"),
             {"doc_id": document_id},
         )
         await db.execute(
-            text("DELETE FROM chunk_lexical_documents WHERE document_id = :doc_id"),
+            text("DELETE FROM chunk_lexical_documents WHERE document_id = CAST(:doc_id AS uuid)"),
             {"doc_id": document_id},
         )
     except Exception as e:
@@ -145,11 +147,14 @@ async def delete_by_kb_async(db, kb_id):
     """显式清理知识库词法索引(async); 失败记录日志。"""
     try:
         await db.execute(
-            text("DELETE FROM chunk_lexical_terms WHERE knowledge_base_id = :kb_id"),
+            text("DELETE FROM chunk_lexical_terms WHERE knowledge_base_id = CAST(:kb_id AS uuid)"),
             {"kb_id": kb_id},
         )
         await db.execute(
-            text("DELETE FROM chunk_lexical_documents WHERE knowledge_base_id = :kb_id"),
+            text(
+                "DELETE FROM chunk_lexical_documents "
+                "WHERE knowledge_base_id = CAST(:kb_id AS uuid)"
+            ),
             {"kb_id": kb_id},
         )
     except Exception as e:
@@ -164,11 +169,11 @@ async def index_document_async(db, document_id, kb_id, chunks, index_version=Non
     if not chunk_ids:
         return 0
     await db.execute(
-        text("DELETE FROM chunk_lexical_terms WHERE chunk_id = ANY(:ids)"),
+        text("DELETE FROM chunk_lexical_terms WHERE chunk_id = ANY(CAST(:ids AS uuid[]))"),
         {"ids": chunk_ids},
     )
     await db.execute(
-        text("DELETE FROM chunk_lexical_documents WHERE chunk_id = ANY(:ids)"),
+        text("DELETE FROM chunk_lexical_documents WHERE chunk_id = ANY(CAST(:ids AS uuid[]))"),
         {"ids": chunk_ids},
     )
     doc_records = []
