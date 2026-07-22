@@ -16,7 +16,7 @@
    threshold_passed_count 统计 top_k 截取前的通过数。
 """
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.config import settings
 from core.rag.ranker import Reranker, _sigmoid
@@ -265,7 +265,7 @@ async def test_invalid_rerank_score_continues_and_skipped_in_run_rerank():
     ]
     with patch("core.rag.ranker.Reranker") as fake_reranker:
         fake_instance = fake_reranker.return_value
-        fake_instance.rerank.return_value = fake_output
+        fake_instance.rerank_async = AsyncMock(return_value=fake_output)
         pairs = await retriever._run_rerank(
             kb_id="00000000-0000-0000-0000-000000000000",
             query_text="q",
@@ -286,3 +286,106 @@ async def test_invalid_rerank_score_continues_and_skipped_in_run_rerank():
     assert results[0].chunk_id == "c1"
     assert results[0].rerank_score == 0.8
 
+
+# 9c. Reranker 异步路径: 返回 index(非 content) 且归一化到 (0,1) -------------------
+async def test_reranker_async_returns_index_not_content():
+    fake_response = MagicMock()
+    fake_response.raise_for_status.return_value = None
+    fake_response.json.return_value = {"results": [1, 0], "scores": [2.0, -1.0]}
+
+    fake_client = MagicMock()
+    fake_client.__aenter__.return_value = fake_client
+    fake_client.__aexit__.return_value = False
+
+    async def _fake_post(*a, **k):
+        return fake_response
+
+    fake_client.post.side_effect = _fake_post
+
+    with patch("core.rag.ranker.httpx.AsyncClient", return_value=fake_client):
+        reranker = Reranker(base_url="http://fake")
+        out = await reranker.rerank_async("q", [{"content": "a"}, {"content": "b"}], 2, False)
+
+    assert out == [
+        {"index": 1, "rerank_score": _sigmoid(2.0)},
+        {"index": 0, "rerank_score": _sigmoid(-1.0)},
+    ]
+    # 归一化后落在 (0,1)
+    assert 0 < out[0]["rerank_score"] < 1
+    assert 0 < out[1]["rerank_score"] < 1
+    # index 顺序与 content 顺序不同 -> 证明是按 index 映射, 非 content
+    assert out[0]["index"] == 1
+
+
+# 9d. _run_rerank 降级路径必须保持绿(防 rerank 静默失效坑重演) ---------------------
+async def test_run_rerank_falls_back_when_reranker_raises():
+    retriever = Retriever(db=MagicMock())
+    candidates = [_make(f"c{i}", rrf_rank=i + 1) for i in range(3)]
+
+    with patch("core.rag.ranker.Reranker") as fake_reranker:
+        fake_instance = fake_reranker.return_value
+        fake_instance.rerank_async = AsyncMock(side_effect=RuntimeError("rerank down"))
+        pairs = await retriever._run_rerank(
+            kb_id="00000000-0000-0000-0000-000000000000",
+            query_text="q",
+            candidates=candidates,
+            actual_candidate_k=3,
+            timings={},
+        )
+    # rerank 抛异常 -> 降级返回 None, 由 RRF 兜底
+    assert pairs is None
+
+
+# 10. HyDE 失败状态可区分: timeout / error / empty / ok -------------------------
+async def test_generate_hyde_timeout():
+    from httpx import TimeoutException as HttpxTimeout
+
+    retriever = Retriever(db=MagicMock())
+
+    def boom(*a, **k):
+        raise HttpxTimeout("timed out")
+
+    with patch("core.llm.factory.get_llm_client") as fake_factory:
+        fake_llm = MagicMock()
+        fake_llm.chat.side_effect = boom
+        fake_factory.return_value = fake_llm
+        text, status = await retriever._generate_hyde("q")
+    assert text is None
+    assert status == "timeout"
+
+
+async def test_generate_hyde_error():
+    retriever = Retriever(db=MagicMock())
+
+    def boom(*a, **k):
+        raise RuntimeError("llm down")
+
+    with patch("core.llm.factory.get_llm_client") as fake_factory:
+        fake_llm = MagicMock()
+        fake_llm.chat.side_effect = boom
+        fake_factory.return_value = fake_llm
+        text, status = await retriever._generate_hyde("q")
+    assert text is None
+    assert status == "error"
+
+
+async def test_generate_hyde_empty():
+    retriever = Retriever(db=MagicMock())
+    with patch("core.llm.factory.get_llm_client") as fake_factory:
+        fake_llm = MagicMock()
+        fake_llm.chat.return_value = "   "  # 空白 -> 视为空
+        fake_factory.return_value = fake_llm
+        text, status = await retriever._generate_hyde("q")
+    assert text is None
+    assert status == "empty"
+
+
+async def test_generate_hyde_ok():
+    retriever = Retriever(db=MagicMock())
+    with patch("core.llm.factory.get_llm_client") as fake_factory:
+        fake_llm = MagicMock()
+        fake_llm.chat.return_value = "假设性文档内容"
+        fake_factory.return_value = fake_llm
+        text, status = await retriever._generate_hyde("q")
+    assert text == "假设性文档内容"
+    assert status == "ok"

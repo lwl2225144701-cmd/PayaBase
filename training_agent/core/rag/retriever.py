@@ -8,9 +8,10 @@ import hashlib
 import logging
 import re
 import time
-from collections import Counter
 from typing import Optional
 from dataclasses import dataclass, field
+
+import httpx
 
 from core.infrastructure.redis.client import get_redis_client
 from sqlalchemy import select, func, text
@@ -176,7 +177,7 @@ def _post_process_results(
     dedup: bool = True,
     max_per_doc: int = 0,
     top_k: int = 0,
-    min_content_length: int = 50,
+    min_content_length: int = settings.dedup_min_content_length,
 ) -> tuple[list[RetrievedChunk], dict[str, object]]:
     """最终结果返回前的统一后处理。
 
@@ -302,7 +303,7 @@ class Retriever:
         candidate_ids: list[str],
         candidate_k: int,
     ) -> str:
-        ids_hash = hashlib.md5(",".join(candidate_ids).encode("utf-8")).hexdigest()
+        ids_hash = hashlib.sha256(",".join(candidate_ids).encode("utf-8")).hexdigest()
         return (
             "rerank:"
             f"{kb_id}:"
@@ -350,61 +351,6 @@ class Retriever:
             return True, actual_candidate_k, "close_scores"
 
         return False, actual_candidate_k, "high_confidence_skip"
-
-    def _tokenize(self, text: str) -> list[str]:
-        """分词"""
-        return [w.lower() for w in text.split() if len(w) > 1]
-
-    def _bm25_score(self, query: str, corpus: list[str], top_k: int = 10) -> list[tuple[int, float]]:
-        """BM25算法
-        
-        Args:
-            query: 查询
-            corpus: 文档列表
-            top_k: 返回数量
-            
-        Returns:
-            [(doc_idx, score), ...]
-        """
-        if not corpus or not query:
-            return [(i, 0.0) for i in range(len(corpus))]
-
-        n = len(corpus)
-        doc_freqs = Counter()
-        for doc in corpus:
-            for word in set(self._tokenize(doc)):
-                doc_freqs[word] += 1
-
-        # IDF
-        idf = {}
-        for word, df in doc_freqs.items():
-            idf[word] = math.log((n - df + 0.5) / (df + 0.5) + 1)
-
-        # 文档长度
-        doc_lens = [len(self._tokenize(d)) for d in corpus]
-        avg_len = sum(doc_lens) / n if n > 0 else 1
-
-        query_words = self._tokenize(query)
-
-        scores = []
-        for idx, doc in enumerate(corpus):
-            doc_words = self._tokenize(doc)
-            word_count = Counter(doc_words)
-            doc_len = doc_lens[idx]
-
-            score = 0
-            k1, b = 1.5, 0.75
-            for word in query_words:
-                if word in word_count:
-                    tf = word_count[word]
-                    numerator = tf * (k1 + 1)
-                    denominator = tf + k1 * (1 - b + b * doc_len / avg_len)
-                    score += idf.get(word, 0) * numerator / denominator
-
-            scores.append((idx, score))
-
-        scores.sort(key=lambda x: x[1], reverse=True)
-        return scores[:top_k]
 
     def _rrf_fusion(
         self,
@@ -592,7 +538,8 @@ class Retriever:
         if use_hyde and settings.hyde_enabled and query_vector:
             try:
                 t_h = time.time()
-                hyde_doc = await self._generate_hyde(query_text)
+                hyde_doc, hyde_status = await self._generate_hyde(query_text)
+                timings["hyde_status"] = hyde_status
                 if hyde_doc:
                     hyde_vec = await EmbeddingClient().embed_single(hyde_doc)
                     if hyde_vec and len(hyde_vec) == len(query_vector):
@@ -601,9 +548,12 @@ class Retriever:
                             q * alpha + h * (1 - alpha)
                             for q, h in zip(query_vector, hyde_vec)
                         ]
+                elif hyde_status in ("empty", "timeout", "error"):
+                    logger.info(f"[RAG] HyDE 降级({hyde_status}), 使用原始 query 向量")
                 timings["hyde_ms"] = int((time.time() - t_h) * 1000)
             except Exception as e:
                 logger.warning(f"[RAG] HyDE 生成失败,降级为原始 query 向量: {e}")
+                timings["hyde_status"] = "error"
                 timings["hyde_ms"] = 0
 
         result = await self.similarity_search(
@@ -622,10 +572,16 @@ class Retriever:
             return retrieved, sub
         return result
 
-    async def _generate_hyde(self, query_text: str) -> str | None:
+    async def _generate_hyde(self, query_text: str) -> tuple[str | None, str]:
         """查询时 HyDE: 根据用户问题生成一篇假设性回答文档。
 
-        仅用于检索增强,不进入最终回答;失败返回 None 由调用方降级。
+        仅用于检索增强,不进入最终回答。返回 ``(文本, 状态)``:
+        - ``("...", "ok")``      正常生成;
+        - ``(None, "empty")``     LLM 返回空字符串;
+        - ``(None, "timeout")``   LLM 调用超时(区分于其他异常, 便于线上排查);
+        - ``(None, "error")``     其他异常。
+
+        调用方据状态写 ``timings["hyde_status"]``, 失败均降级为原始 query 向量。
         """
         from core.llm.factory import get_llm_client
 
@@ -636,10 +592,17 @@ class Retriever:
         ]
         try:
             resp = await asyncio.to_thread(llm.chat, messages)
-            return (resp or "").strip() or None
+            text = (resp or "").strip()
+            if not text:
+                logger.warning("[RAG] HyDE LLM 返回空字符串, 降级为原始 query 向量")
+                return None, "empty"
+            return text, "ok"
+        except (httpx.TimeoutException, TimeoutError) as e:
+            logger.warning(f"[RAG] HyDE LLM 调用超时(降级): {type(e).__name__}: {e}")
+            return None, "timeout"
         except Exception as e:
-            logger.warning(f"[RAG] HyDE LLM 调用失败: {e}")
-            return None
+            logger.warning(f"[RAG] HyDE LLM 调用失败(降级): {type(e).__name__}: {e}")
+            return None, "error"
 
     async def similarity_search(
         self,
@@ -1061,8 +1024,7 @@ class Retriever:
             reranker = RerankClient()
             chunk_dicts = [{"content": c.content, "score": c.score} for c in rerank_candidates]
             t_stage = time.time()
-            rerank_output = await asyncio.to_thread(
-                reranker.rerank,
+            rerank_output = await reranker.rerank_async(
                 query_text or "search",
                 chunk_dicts,
                 actual_candidate_k,

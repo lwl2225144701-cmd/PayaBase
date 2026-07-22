@@ -27,6 +27,37 @@ def _sigmoid(x: float) -> float:
         return 1.0 if x > 0 else 0.0
 
 
+def _parse_rerank_response(data: dict, top_k: int) -> list[dict]:
+    """把 rerank 服务 JSON 响应解析为统一输出。
+
+    返回按重排后顺序排列的列表, 每个元素为
+    ``{"index": <输入序号>, "rerank_score": <归一化到 [0,1] 的相关度>}``。
+
+    - 用「输入 index」映射回候选块, **不再用 content 文本匹配**(不同块正文可能相同/
+      被截断/清洗, 文本匹配不可靠)。
+    - score 经 sigmoid 归一化到 (0,1), 才能用于 threshold 过滤与百分比展示。
+    - rerank_score 为 None 表示该结果不可用(服务未返回分数/分数非法), 由调用方跳过。
+
+    Args:
+        data: 服务返回的 JSON dict(含 ``results`` / ``scores``)。
+        top_k: 返回数量。
+
+    Returns:
+        重排后的 [{"index": int, "rerank_score": float | None}, ...]
+    """
+    indices = data.get("results") or []
+    raw_scores = data.get("scores") or []
+    out: list[dict] = []
+    for j, idx in enumerate(indices):
+        try:
+            raw = float(raw_scores[j]) if j < len(raw_scores) else None
+        except (TypeError, ValueError):
+            raw = None
+        norm = _sigmoid(raw) if raw is not None else None
+        out.append({"index": int(idx), "rerank_score": norm})
+    return out[:top_k]
+
+
 class Reranker:
     """bge-rerank re-ranking."""
 
@@ -45,24 +76,9 @@ class Reranker:
         top_k: int = 5,
         raise_on_failure: bool = False,
     ) -> list[dict]:
-        """Re-rank chunks.
+        """同步重排序(脚本/celery 等非异步上下文使用)。
 
-        返回按重排后顺序排列的列表, 每个元素为
-        ``{"index": <输入序号>, "rerank_score": <归一化到 [0,1] 的相关度>}``。
-
-        注意:
-        - 用「输入 index」映射回候选块, **不再用 content 文本匹配**(不同块正文可能相同/
-          被截断/清洗, 文本匹配不可靠)。
-        - score 经 sigmoid 归一化到 (0,1), 才能用于 threshold 过滤与百分比展示。
-        - rerank_score 为 None 表示该结果不可用(服务未返回分数/分数非法), 由调用方跳过。
-
-        Args:
-            query: Query text
-            chunks: List of chunk dicts
-            top_k: Number of results
-
-        Returns:
-            重排后的 [{"index": int, "rerank_score": float | None}, ...]
+        异步检索链路请改用 :meth:`rerank_async`, 避免阻塞事件循环。
         """
         if not chunks:
             return []
@@ -83,22 +99,57 @@ class Reranker:
                 )
                 response.raise_for_status()
                 data = response.json()
-                indices = data.get("results") or []
-                raw_scores = data.get("scores") or []
-
-            out: list[dict] = []
-            for j, idx in enumerate(indices):
-                try:
-                    raw = float(raw_scores[j]) if j < len(raw_scores) else None
-                except (TypeError, ValueError):
-                    raw = None
-                norm = _sigmoid(raw) if raw is not None else None
-                out.append({"index": int(idx), "rerank_score": norm})
+            out = _parse_rerank_response(data, top_k)
             logger.info(f"[Reranker] 重排序完成, 返回{len(out)}条")
-            return out[:top_k]
+            return out
 
         except Exception as e:
             logger.warning(f"Rerank failed: {e}, returning original order without scores")
+            if raise_on_failure:
+                raise RuntimeError(f"rerank_request_failed: {e}") from e
+            return [{"index": i, "rerank_score": None} for i in range(len(chunks))]
+
+    async def rerank_async(
+        self,
+        query: str,
+        chunks: list[dict],
+        top_k: int = 5,
+        raise_on_failure: bool = False,
+    ) -> list[dict]:
+        """异步重排序, 不阻塞事件循环。
+
+        与 :meth:`rerank` 共用解析逻辑(_parse_rerank_response); 内部使用
+        ``httpx.AsyncClient`` + ``await``。**必须保留 ``trust_env=False``**,
+        否则会被 ``HTTP_PROXY`` 拐去代理导致 503。
+        """
+        if not chunks:
+            return []
+
+        logger.info(
+            f"[Reranker] 异步请求重排序, query={query[:30]}, "
+            f"chunks={len(chunks)}, top_k={top_k}"
+        )
+
+        texts = [chunk["content"] for chunk in chunks]
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0, trust_env=False) as client:
+                response = await client.post(
+                    f"{self.base_url}/rerank",
+                    json={
+                        "query": query,
+                        "texts": texts,
+                        "top_k": top_k,
+                    },
+                )
+                response.raise_for_status()
+                data = response.json()
+            out = _parse_rerank_response(data, top_k)
+            logger.info(f"[Reranker] 异步重排序完成, 返回{len(out)}条")
+            return out
+
+        except Exception as e:
+            logger.warning(f"[Reranker] 异步重排序失败: {e}, 返回原始顺序(无分数)")
             if raise_on_failure:
                 raise RuntimeError(f"rerank_request_failed: {e}") from e
             return [{"index": i, "rerank_score": None} for i in range(len(chunks))]
