@@ -526,13 +526,19 @@ class Retriever:
 
         timings: dict[str, object] = {}
         t0 = time.time()
-        query_vector = await EmbeddingClient().embed_single(query_text)
-        timings["embedding_ms"] = int((time.time() - t0) * 1000)
-        if not query_vector:
-            # Embedding 失败/返回空向量: 不得在此直接返回空。
+        try:
+            query_vector = await EmbeddingClient().embed_single(query_text)
+        except Exception as e:
+            # Embedding 服务异常: 不得在此直接抛出导致整次检索失败。
             # 置空后继续走 similarity_search, 让 BM25 独立召回(vector_status=error,
             # degraded_mode=bm25_only); 只有向量与 BM25 都失败才返回空。
-            logger.warning("[RAG] query 向量化失败, 降级为 BM25 单路召回")
+            logger.warning(f"[RAG] query 向量化异常, 降级为 BM25 单路召回: {e}")
+            query_vector = None
+        timings["embedding_ms"] = int((time.time() - t0) * 1000)
+        if not query_vector:
+            # 返回空数组或直接抛异常: 不得在此直接返回空, 置空继续 similarity_search
+            # (理由同上, 让 BM25 单路降级; 双路都失败才返回空)。
+            logger.warning("[RAG] query 向量化失败/为空, 降级为 BM25 单路召回")
             query_vector = None
 
         if use_hyde and settings.hyde_enabled and query_vector:

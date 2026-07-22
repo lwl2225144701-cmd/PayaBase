@@ -19,6 +19,7 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from core.config import settings
+from core.embedding.client import EmbeddingClient
 from core.rag.ranker import Reranker, _sigmoid
 from core.rag.retriever import (
     RetrievedChunk,
@@ -389,3 +390,25 @@ async def test_generate_hyde_ok():
         text, status = await retriever._generate_hyde("q")
     assert text == "假设性文档内容"
     assert status == "ok"
+
+
+async def test_search_embedding_exception_does_not_propagate(monkeypatch):
+    # 验收: embed_single 直接抛异常时, search 不应崩溃, 必须继续 similarity_search,
+    # 且传入 query_vector=None(下游置 vector_status=error, 降级 BM25 单路)。
+    async def _boom(*a, **k):
+        raise RuntimeError("embedding service down")
+
+    monkeypatch.setattr(EmbeddingClient, "embed_single", _boom)
+
+    # 避免真实走 DB/LLM: 用 AsyncMock 替身验证调用契约(query_vector=None)
+    sim = AsyncMock(return_value=([], {"vector_status": "error", "degraded_mode": "bm25_only"}))
+    monkeypatch.setattr(Retriever, "similarity_search", sim)
+
+    retriever = Retriever(db=MagicMock())
+    results, timings = await retriever.search(
+        query_text="差动保护", kb_id="k", return_timings=True
+    )
+    assert results == []
+    # similarity_search 收到的第一个位置参数必须是 None(降级信号, 非异常上抛)
+    assert sim.call_args.args[0] is None
+    assert timings["vector_status"] == "error"

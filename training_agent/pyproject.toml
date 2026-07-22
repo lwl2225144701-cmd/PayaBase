@@ -72,3 +72,6 @@ dev = [
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+markers = [
+    "pg_integration: 真实 PostgreSQL 集成测试(依赖本地 PG, 不可用时自动 skip, 禁止把普通单测通过说成 PG 集成已通过)",
+]

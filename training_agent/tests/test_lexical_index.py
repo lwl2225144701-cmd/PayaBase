@@ -11,8 +11,10 @@
 """
 from unittest.mock import AsyncMock, MagicMock
 
+from core.config import settings
 from core.rag.lexical_index import (
     build_lexical_text,
+    calculate_lexical_hash,
     content_hash,
     extract_chunk_terms,
     index_document_sync,
@@ -266,3 +268,23 @@ def test_needs_rebuild_classification():
     # 无 chunk -> 跳过
     need, klass = _needs_rebuild([], existing, "v1", force=False)
     assert need is False and klass == "skipped_no_chunk"
+
+
+# 3b. calculate_lexical_hash 是索引写入与回填的唯一口径 -----------------------
+def test_calculate_lexical_hash_unified():
+    title, content, meta, version = "文档", "RCS-931 差动保护", {"model": "RCS-931"}, "v1"
+    # 与 extract_chunk_terms 写入的 content_hash 完全一致(索引写入与回填同一函数)
+    doc_record, _ = extract_chunk_terms("cid", "did", "kid", title, content, meta, version)
+    assert doc_record["content_hash"] == calculate_lexical_hash(title, content, meta, version)
+
+    # 截断确实生效: 超长文本时, 截断后的 hash 与“未截断”版本不同
+    long = content * 100000
+    truncated = calculate_lexical_hash(title, long, meta, version)
+    untruncated = content_hash(build_lexical_text(title, long, meta), version)
+    assert truncated != untruncated
+
+    # 截断口径幂等: 相同长文本两次计算结果一致(保证长文本两次回填第二次 skipped)
+    assert calculate_lexical_hash(title, long, meta, version) == truncated
+    assert calculate_lexical_hash(title, "短文本", meta, version) == content_hash(
+        build_lexical_text(title, "短文本", meta)[:settings.lexical_max_text_length], version
+    )

@@ -46,6 +46,18 @@ def content_hash(text: str, index_version: str) -> str:
     return hashlib.sha256(f"{index_version}::{text}".encode()).hexdigest()
 
 
+def calculate_lexical_hash(title, content, meta, index_version) -> str:
+    """唯一的 content_hash 计算(索引写入与回填必须共用, 禁止各自实现)。
+
+    统一口径: 构建索引文本 → 截断到 lexical_max_text_length → 拼接 index_version → sha256。
+    索引写入(extract_chunk_terms)与回填(rebuild_lexical_index._needs_rebuild)都必须
+    调用本函数。若任一处自行调用 build_lexical_text/content_hash(尤其漏掉截断),
+    长文本两次回填时 hash 永远不匹配 → 每次都判为 updated、无法 skipped。
+    """
+    text = build_lexical_text(title, content, meta)[: settings.lexical_max_text_length]
+    return content_hash(text, index_version)
+
+
 def extract_chunk_terms(chunk_id, document_id, kb_id, title, content, meta, index_version):
     """返回 (doc_record, term_rows)。
 
@@ -63,7 +75,7 @@ def extract_chunk_terms(chunk_id, document_id, kb_id, title, content, meta, inde
         "knowledge_base_id": kb_id,
         "document_id": document_id,
         "token_count": token_count,
-        "content_hash": content_hash(text, index_version),
+        "content_hash": calculate_lexical_hash(title, content, meta, index_version),
         "index_version": index_version,
     }
     term_rows = [

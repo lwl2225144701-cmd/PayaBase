@@ -59,6 +59,12 @@ def _pg_available() -> bool:
 def _drop_and_create(admin, name):
     admin.autocommit = True
     cur = admin.cursor()
+    # 先终止该库所有连接(避免测试中断/连接泄漏导致 DROP 报 ObjectInUse)
+    cur.execute(
+        "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+        "WHERE datname = %s AND pid <> pg_backend_pid()",
+        (name,),
+    )
     cur.execute(f'DROP DATABASE IF EXISTS "{name}"')
     cur.execute(f'CREATE DATABASE "{name}" OWNER training')
     cur.close()
@@ -180,6 +186,7 @@ async def _seed(session, status="ready", chunks=None, tenant=None, kb=None, doc=
 
 
 # === 1. migration 建表 / downgrade ============================================
+@pytest.mark.pg_integration
 def test_migration_creates_and_drops_tables(pg_mig, monkeypatch):
     from alembic import command
     from alembic.config import Config
@@ -211,6 +218,7 @@ def test_migration_creates_and_drops_tables(pg_mig, monkeypatch):
 
 
 # === 2. 回填(index_document_async) ============================================
+@pytest.mark.pg_integration
 async def test_rebuild_populates_lexical_index(session):
     _, kb, doc = await _seed(
         session,
@@ -234,6 +242,7 @@ async def test_rebuild_populates_lexical_index(session):
 
 
 # === 3. BM25 查询(向量为空时纯 BM25 命中) ====================================
+@pytest.mark.pg_integration
 async def test_bm25_query_returns_chunk(session):
     _, kb, _ = await _seed(
         session,
@@ -256,6 +265,7 @@ async def test_bm25_query_returns_chunk(session):
 
 
 # === 4. metadata / document_id 过滤(白名单, 防注入) ============================
+@pytest.mark.pg_integration
 async def test_filters_metadata_and_document_id(session):
     tenant = Tenant(id=uuid.uuid4(), name="t")
     session.add(tenant)
@@ -339,6 +349,7 @@ async def test_filters_metadata_and_document_id(session):
 
 
 # === 5. Chunk / Document / KB 删除级联 ========================================
+@pytest.mark.pg_integration
 async def test_chunk_delete_cascade(session):
     _, kb, doc = await _seed(
         session,
@@ -372,6 +383,7 @@ async def test_chunk_delete_cascade(session):
     ).scalar_one() == 0
 
 
+@pytest.mark.pg_integration
 async def test_document_delete_cascade(session):
     _, kb, doc = await _seed(
         session, chunks=[{"content": "A 差动保护", "meta": {}}]
@@ -387,6 +399,7 @@ async def test_document_delete_cascade(session):
     ).scalar_one() == 0
 
 
+@pytest.mark.pg_integration
 async def test_kb_delete_cascade(session):
     tenant, kb, doc = await _seed(
         session, chunks=[{"content": "A 差动保护", "meta": {}}]
@@ -403,6 +416,7 @@ async def test_kb_delete_cascade(session):
 
 
 # === 6. batch_replace chunk_id 一致性 =========================================
+@pytest.mark.pg_integration
 async def test_batch_replace_uuid_consistency(session):
     tenant = Tenant(id=uuid.uuid4(), name="t")
     session.add(tenant)
@@ -451,6 +465,7 @@ async def test_batch_replace_uuid_consistency(session):
 
 
 # === 7. Embedding 失败后 BM25 单路降级 =======================================
+@pytest.mark.pg_integration
 async def test_embedding_failure_bm25_degrade(session, monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -468,6 +483,7 @@ async def test_embedding_failure_bm25_degrade(session, monkeypatch):
     assert results[0].matched_channels == ["bm25"]
 
 
+@pytest.mark.pg_integration
 async def test_both_fail_returns_empty(session, monkeypatch):
     from unittest.mock import AsyncMock
 
@@ -486,3 +502,210 @@ async def test_both_fail_returns_empty(session, monkeypatch):
     )
     assert results == []
     assert timings["degraded_mode"] == "both_failed"
+
+
+# === 8. Embedding 直接抛异常也降级(不只测返回 []) ==============================
+@pytest.mark.pg_integration
+async def test_embedding_exception_bm25_degrade(session, monkeypatch):
+    async def _boom(self, *a, **k):
+        raise RuntimeError("embedding service down")
+
+    monkeypatch.setattr(EmbeddingClient, "embed_single", _boom)
+    _, kb, _ = await _seed(
+        session, chunks=[{"content": "RCS-931 差动保护 故障", "meta": {}}]
+    )
+    retriever = Retriever(session)
+    results, timings = await retriever.search(
+        query_text="差动保护", kb_id=str(kb.id), top_k=5, use_rerank=False, return_timings=True
+    )
+    assert len(results) >= 1
+    assert timings["vector_status"] == "error"
+    assert timings["degraded_mode"] == "bm25_only"
+    assert results[0].matched_channels == ["bm25"]
+
+
+# === 9. 旧库非级联外键 → migration 升级为级联 ================================
+def _pg_fk(url, table, column, ref_table, ref_column):
+    """返回 (约束名, delete_rule) 或 (None, None)。"""
+    with psycopg2.connect(url, connect_timeout=5) as c:
+        cur = c.cursor()
+        cur.execute(
+            """
+            SELECT tc.constraint_name, rc.delete_rule
+            FROM information_schema.table_constraints tc
+            JOIN information_schema.key_column_usage kcu
+              ON tc.constraint_name = kcu.constraint_name
+             AND tc.table_schema = kcu.table_schema
+            JOIN information_schema.constraint_column_usage ccu
+              ON ccu.constraint_name = tc.constraint_name
+             AND ccu.table_schema = tc.table_schema
+            JOIN information_schema.referential_constraints rc
+              ON rc.constraint_name = tc.constraint_name
+             AND rc.constraint_schema = tc.table_schema
+            WHERE tc.constraint_type = 'FOREIGN KEY'
+              AND tc.table_name = %s
+              AND kcu.column_name = %s
+              AND ccu.table_name = %s
+              AND ccu.column_name = %s
+            """,
+            (table, column, ref_table, ref_column),
+        )
+        row = cur.fetchone()
+    return (row[0], row[1]) if row else (None, None)
+
+
+def _verify_kb_cascade(url):
+    """插入 tenant/kb/doc, 删 KB, 断言 document 被级联清理。
+
+    用 SQLAlchemy Core 的表元数据插入: 列上的 Python 级 default
+    (embedding_model / chunk_count / created_at / config 等) 会自动带入,
+    无需手工补齐 NOT NULL 列。
+    """
+    from sqlalchemy import create_engine as _ce
+
+    engine = _ce(url)
+    tid = uuid.UUID("11111111-1111-1111-1111-111111111111")
+    kid = uuid.UUID("22222222-2222-2222-2222-222222222222")
+    did = uuid.UUID("33333333-3333-3333-3333-333333333333")
+    with engine.begin() as conn:
+        conn.execute(Tenant.__table__.insert().values(id=tid, name="t"))
+        conn.execute(
+            KnowledgeBase.__table__.insert().values(id=kid, tenant_id=tid, name="kb")
+        )
+        conn.execute(
+            Document.__table__.insert().values(
+                id=did,
+                knowledge_base_id=kid,
+                title="d",
+                file_path="/x",
+                file_type="md",
+                file_size=1,
+                status="ready",
+            )
+        )
+        conn.execute(KnowledgeBase.__table__.delete().where(KnowledgeBase.__table__.c.id == kid))
+        n = conn.execute(
+            select(func.count()).select_from(Document).where(Document.__table__.c.id == did)
+        ).scalar_one()
+    engine.dispose()
+    assert n == 0, "KB 删除未级联清理 documents(级联外键未生效)"
+
+
+@pytest.fixture(scope="session")
+def pg_mig_old():
+    """模拟旧库: documents/chunks 外键为非级联(早期代码未带 ON DELETE CASCADE)。"""
+    if not _pg_available():
+        pytest.skip("本地 PostgreSQL 不可用, 跳过 migration 集成测试")
+    name = "training_agent_test_mig_old"
+    admin = psycopg2.connect(ADMIN_SYNC, connect_timeout=5)
+    _drop_and_create(admin, name)
+    admin.close()
+    url = f"postgresql://training:training123@localhost:5432/{name}"
+    sync = create_engine(url)
+    with sync.connect() as c:
+        c.execution_options(isolation_level="AUTOCOMMIT").execute(
+            sa_text("CREATE EXTENSION IF NOT EXISTS vector")
+        )
+    # 仅建父表(排除 chunk_lexical, 由 migration 创建)
+    parent_tables = [
+        t
+        for t in Base.metadata.tables.values()
+        if t.name not in ("chunk_lexical_documents", "chunk_lexical_terms")
+    ]
+    Base.metadata.create_all(sync, tables=parent_tables)
+    # 把两个 FK 改为非级联, 模拟旧库(先 DROP 现有, 再以同名重建非级联)
+    with sync.connect() as c:
+        conn = c.execution_options(isolation_level="AUTOCOMMIT")
+        for table, col, ref, refcol in [
+            ("documents", "knowledge_base_id", "knowledge_bases", "id"),
+            ("chunks", "document_id", "documents", "id"),
+        ]:
+            old, _ = _pg_fk(url, table, col, ref, refcol)
+            if old:
+                conn.execute(sa_text(f'ALTER TABLE {table} DROP CONSTRAINT "{old}"'))
+            conn.execute(
+                sa_text(
+                    f'ALTER TABLE {table} ADD CONSTRAINT "{old}" '
+                    f"FOREIGN KEY ({col}) REFERENCES {ref}({refcol})"
+                )
+            )
+    yield url
+    sync.dispose()
+    admin = psycopg2.connect(ADMIN_SYNC, connect_timeout=5)
+    _drop_and_create(admin, name)
+    admin.close()
+
+
+@pytest.mark.pg_integration
+def test_migration_fixes_old_noncascade_fk(pg_mig_old, monkeypatch):
+    from alembic import command
+    from alembic.config import Config
+
+    monkeypatch.setenv("ALEMBIC_DB_URL", pg_mig_old)
+    cfg = Config(os.path.join(os.path.dirname(__file__), "..", "alembic.ini"))
+
+    # 升级前: 非级联
+    assert (
+        _pg_fk(pg_mig_old, "documents", "knowledge_base_id", "knowledge_bases", "id")[1]
+        == "NO ACTION"
+    )
+    assert (
+        _pg_fk(pg_mig_old, "chunks", "document_id", "documents", "id")[1]
+        == "NO ACTION"
+    )
+
+    # 升级到 head: 必须先把旧 FK DROP 再创建级联 FK
+    command.upgrade(cfg, "head")
+    assert (
+        _pg_fk(pg_mig_old, "documents", "knowledge_base_id", "knowledge_bases", "id")[1]
+        == "CASCADE"
+    )
+    assert (
+        _pg_fk(pg_mig_old, "chunks", "document_id", "documents", "id")[1]
+        == "CASCADE"
+    )
+
+    # 级联真实生效: 删 KB 连带文档被删
+    _verify_kb_cascade(pg_mig_old)
+
+    # 降回 base 可重复执行(还原为非级联)
+    command.downgrade(cfg, "base")
+    assert (
+        _pg_fk(pg_mig_old, "documents", "knowledge_base_id", "knowledge_bases", "id")[1]
+        == "NO ACTION"
+    )
+
+
+# === 10. 长文本 Chunk 两次回填第二次必须 skipped ==============================
+@pytest.mark.pg_integration
+async def test_rebuild_long_chunk_second_run_skipped(pg, session):
+    from scripts.rebuild_lexical_index import process as rebuild_process
+
+    # 构造超过 lexical_max_text_length 的长文本(触发截断)
+    long_content = "继电保护装置定期检验规程要点与故障分析说明。" * 11112  # ≈200016 > 200000
+    assert len(long_content) > settings.lexical_max_text_length
+
+    tenant = Tenant(id=uuid.uuid4(), name="t")
+    session.add(tenant)
+    kb = KnowledgeBase(id=uuid.uuid4(), tenant_id=tenant.id, name="kb")
+    session.add(kb)
+    doc = Document(
+        id=uuid.uuid4(), knowledge_base_id=kb.id, title="长文档",
+        file_path="/x", file_type="md", file_size=1, status="ready",
+    )
+    session.add(doc)
+    await session.flush()
+    cid = uuid.uuid4()
+    session.add(Chunk(id=cid, document_id=doc.id, content=long_content, meta={}))
+    await session.commit()
+
+    sync = pg["sync"]
+    index_version = settings.lexical_index_version
+    doc_dict = {"id": doc.id, "knowledge_base_id": kb.id, "title": doc.title}
+    with sync.connect() as conn:
+        klass1 = rebuild_process(conn, doc_dict, index_version, False, False)
+        # 第一次写入后, 索引文本截断口径一致 → 第二次必须 skipped
+        klass2 = rebuild_process(conn, doc_dict, index_version, False, False)
+    assert klass1 in ("indexed", "updated")
+    assert klass2 == "skipped"
+

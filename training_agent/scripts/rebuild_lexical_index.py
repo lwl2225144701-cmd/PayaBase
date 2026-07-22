@@ -44,8 +44,7 @@ from sqlalchemy import text  # noqa: E402
 from core.config import settings  # noqa: E402
 from core.infrastructure.db.sync_session import get_sync_engine  # noqa: E402
 from core.rag.lexical_index import (  # noqa: E402
-    build_lexical_text,
-    content_hash,
+    calculate_lexical_hash,
     index_document_sync,
 )
 
@@ -157,8 +156,9 @@ def _needs_rebuild(
     for c in chunk_rows:
         cid = str(c["id"])
         title = c.get("title") or ""
-        text = build_lexical_text(title, c["content"], c.get("meta") or {})
-        h = content_hash(text, index_version)
+        # 必须用与索引写入完全一致的 calculate_lexical_hash(统一截断 + index_version + sha256),
+        # 否则长文本 hash 永远不匹配 → 每次都判为 updated、无法 skipped。
+        h = calculate_lexical_hash(title, c["content"], c.get("meta") or {}, index_version)
         prior = existing.get(cid)
         if prior is None or prior != (h, index_version):
             return True, "updated"
