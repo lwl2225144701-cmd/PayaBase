@@ -72,10 +72,10 @@ def _get_chunks(conn, document_id: uuid.UUID) -> list:
     rows = conn.execute(
         text(
             """
-            SELECT c.id, c.content, c.meta, c.sequence_no, c.created_at
+            SELECT c.id, c.content, c.meta, c.sequence_no
             FROM chunks c
             WHERE c.document_id = :doc_id
-            ORDER BY c.sequence_no, c.created_at, c.id
+            ORDER BY c.sequence_no, c.id
             """
         ),
         {"doc_id": document_id},
@@ -90,11 +90,10 @@ def _get_chunks(conn, document_id: uuid.UUID) -> list:
                 meta.get("chunk_index", 0),
                 meta.get("page", 0),
                 meta.get("start_offset", 0),
-                chunk.get("created_at"),
                 str(chunk["id"]),
             )
         else:
-            order_key = (chunk.get("sequence_no", 0), chunk.get("created_at"), str(chunk["id"]))
+            order_key = (chunk.get("sequence_no", 0), str(chunk["id"]))
         chunk["_order_key"] = order_key
         chunks.append(chunk)
 
