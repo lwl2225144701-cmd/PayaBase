@@ -11,6 +11,8 @@
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from core.config import settings
 from core.rag.retriever import (
     RetrievedChunk,
@@ -18,6 +20,13 @@ from core.rag.retriever import (
     _filter_valid_bm25_results,
     _post_process_results,
 )
+
+
+@pytest.fixture(autouse=True)
+def _disable_context_expansion():
+    """Phase 4 上下文扩展隔离: 这些 Phase 2/3 测试期间关闭扩展, expand_results 早返回不查 DB。"""
+    with patch.object(settings, "context_expansion_enabled", False):
+        yield
 
 
 def _make(chunk_id, content="x", rrf_score=0.0, rrf_rank=1, document_id="d1", rerank_score=None):

@@ -8,8 +8,17 @@
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+
 from core.config import settings
 from core.rag.retriever import Retriever
+
+
+@pytest.fixture(autouse=True)
+def _disable_context_expansion():
+    """Phase 4 上下文扩展隔离: 这些 Phase 2/3 测试期间关闭扩展, expand_results 早返回不查 DB。"""
+    with patch.object(settings, "context_expansion_enabled", False):
+        yield
 
 KB = "00000000-0000-0000-0000-000000000000"
 

@@ -98,10 +98,17 @@ class Document(Base):
 
     knowledge_base: Mapped["KnowledgeBase"] = relationship("KnowledgeBase", back_populates="documents")
     chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="document", cascade="all, delete-orphan")
+    context_blocks: Mapped[list["ChunkContextBlock"]] = relationship(
+        "ChunkContextBlock", back_populates="document", cascade="all, delete-orphan"
+    )
 
 
 class Chunk(Base):
     __tablename__ = "chunks"
+    __table_args__ = (
+        Index("ix_chunks_document_sequence", "document_id", "sequence_no"),
+        Index("ix_chunks_context_block_id", "context_block_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     document_id: Mapped[uuid.UUID] = mapped_column(
@@ -114,8 +121,43 @@ class Chunk(Base):
     vector: Mapped[Optional[list[float]]] = mapped_column(Vector(512), nullable=True)
     meta: Mapped[dict] = mapped_column(JSON, default={})
     token_count: Mapped[int] = mapped_column(Integer, default=0)
+    # Phase 4: 子块在文档内的稳定顺序与父上下文块关联
+    sequence_no: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    context_block_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("chunk_context_blocks.id", ondelete="SET NULL"), nullable=True
+    )
 
     document: Mapped["Document"] = relationship("Document", back_populates="chunks")
+    context_block: Mapped[Optional["ChunkContextBlock"]] = relationship(
+        "ChunkContextBlock", back_populates="chunks"
+    )
+
+
+class ChunkContextBlock(Base):
+    """父上下文块: 同一文档内连续子块的合并上下文。
+
+    仅用于检索后上下文补充, 不生成向量、不参与 BM25/RRF/Rerank。
+    随 Document 级联删除。
+    """
+    __tablename__ = "chunk_context_blocks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    document_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    start_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    end_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    token_count: Mapped[int] = mapped_column(Integer, default=0)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_version: Mapped[str] = mapped_column(String(32), nullable=False, default="v1")
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, server_default=func.now()
+    )
+
+    document: Mapped["Document"] = relationship("Document", back_populates="context_blocks")
+    chunks: Mapped[list["Chunk"]] = relationship("Chunk", back_populates="context_block")
 
 
 class ChunkLexicalDocument(Base):

@@ -127,6 +127,16 @@ async def retrieval_test(
             "matched_terms": list(getattr(chunk, "matched_terms", []) or []),
             "rank": getattr(chunk, "final_rank", idx) or idx,
             "metadata": getattr(chunk, "metadata", {}) or {},
+            # Phase 4 上下文扩展(引用仍定位 child, 可折叠预览扩展上下文)
+            "context_content": getattr(chunk, "context_content", None),
+            "context_group_id": getattr(chunk, "context_group_id", None),
+            "parent_context_id": getattr(chunk, "parent_context_id", None),
+            "context_chunk_ids": list(getattr(chunk, "context_chunk_ids", []) or []),
+            "adjacent_before_ids": list(getattr(chunk, "adjacent_before_ids", []) or []),
+            "adjacent_after_ids": list(getattr(chunk, "adjacent_after_ids", []) or []),
+            "context_source": getattr(chunk, "context_source", None),
+            "context_char_count": getattr(chunk, "context_char_count", None),
+            "context_truncated": getattr(chunk, "context_truncated", None),
         })
 
     total_ms = int((time.time() - overall_t0) * 1000)

@@ -124,6 +124,18 @@ class Settings(BaseSettings):
     hyde_alpha: float = 0.5  # query 向量与 hyde 向量的混合权重 (1=纯query, 0=纯hyde)
     hyde_timeout: float = 30.0
 
+    # Phase 4: 父子块上下文 + 相邻 Chunk 扩展
+    context_expansion_enabled: bool = True
+    context_parent_enabled: bool = True
+    context_adjacent_window: int = 1
+    context_parent_target_tokens: int = 1400
+    context_parent_max_tokens: int = 1800
+    context_parent_min_children: int = 4
+    context_parent_max_children: int = 8
+    context_max_chars_per_result: int = 6000
+    context_total_max_chars: int = 24000
+    context_version: str = "v1"
+
     # Agent
     max_iterations: int = 5
     memory_limit: int = 10

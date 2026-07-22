@@ -22,6 +22,7 @@ from models.tables import Chunk, Document
 from core.exceptions import NotFoundException
 from core.prompts import HYDE_QUERY_SYSTEM_PROMPT, HYDE_QUERY_USER_PROMPT
 from core.embedding.client import EmbeddingClient
+from core.rag.context_expansion import expand_results
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,17 @@ class RetrievedChunk:
     score_type: str = "rrf"
     matched_channels: list = field(default_factory=list)  # 命中通道: vector / bm25
     matched_terms: list = field(default_factory=list)     # BM25 命中查询词
+    # ===== Phase 4 上下文扩展(检索后补充, 不改 final_score/final_rank) =====
+    context_content: Optional[str] = None           # 交给 LLM 的扩展上下文
+    context_group_id: Optional[str] = None          # 去重后的上下文组 ID
+    parent_context_id: Optional[str] = None         # 归属的父上下文块 ID(无则 None)
+    context_chunk_ids: list = field(default_factory=list)   # 本结果覆盖的全部子块 ID
+    adjacent_before_ids: list = field(default_factory=list) # 命中前相邻子块 ID
+    adjacent_after_ids: list = field(default_factory=list)  # 命中后相邻子块 ID
+    context_source: Optional[str] = None            # child/parent/parent_adjacent/child_adjacent
+    context_char_count: Optional[int] = None
+    context_truncated: Optional[bool] = None
+    sequence_no: Optional[int] = None  # 子块在文档中的稳定顺序(供上下文合并)
 
 
 def apply_rerank_scores(
@@ -953,6 +965,22 @@ class Retriever:
         timings["document_limit_removed_count"] = pp_stats["document_limit_removed_count"]
         # final_result_count 必须在全部后处理 + top_k 完成后统计
         timings["final_result_count"] = len(results)
+
+        # ===== 8. Phase 4 上下文扩展(final top_k 之后, 不修改 final_result_count/score/rank) =====
+        # 关闭 context_expansion_enabled 时 expand_results 原样返回, 行为与第三阶段一致。
+        results, ctx_stats = await expand_results(self.db, results)
+        timings.update(ctx_stats)
+        logger.info(
+            f"[RAG][trace={trace_id}] 上下文扩展: parent_hit="
+            f"{ctx_stats['parent_context_hit_count']} adjacent="
+            f"{ctx_stats['adjacent_chunk_count']} groups_before="
+            f"{ctx_stats['context_group_count_before_merge']} groups_after="
+            f"{ctx_stats['context_group_count_after_merge']} dup_removed="
+            f"{ctx_stats['context_duplicate_removed_count']} truncated="
+            f"{ctx_stats['context_truncated_count']} total_chars="
+            f"{ctx_stats['context_total_chars']} ms={ctx_stats['context_expand_ms']}"
+        )
+
         if pre_pp != len(results):
             logger.info(
                 f"[RAG][trace={trace_id}] 后处理: 去重移除={pp_stats['deduplicate_removed_count']} "

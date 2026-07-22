@@ -19,6 +19,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from core.rag.retriever import Retriever
+from core.rag.context_expansion import assemble_context_groups
+from core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -98,6 +100,27 @@ async def retrieve_chat_context(
             f"detail={retrieval_timings}"
         )
 
+        # Phase 4: LLM 上下文使用「去重后的 context groups」(避免重复父块正文);
+        # 引用始终定位到真正命中的子 chunk。
+        # 关闭 context_expansion_enabled 时退化为第三阶段逐子块行为(完全一致)。
+        if settings.context_expansion_enabled:
+            groups = assemble_context_groups(retrieved)
+            for g in groups:
+                result.chunks_data.append({
+                    "content": g.context_content,
+                    "context_content": g.context_content,
+                    "source": g.document_title or "未知来源",
+                    "chunk_type": "parent_context" if g.parent_context_id else "paragraph",
+                    "context_group_id": g.group_id,
+                })
+        else:
+            for c in retrieved:
+                result.chunks_data.append({
+                    "content": c.content,
+                    "source": c.metadata.get("source") or f"知识库-{c.document_title}",
+                    "chunk_type": c.metadata.get("chunk_strategy", "paragraph"),
+                })
+
         for c in retrieved:
             result.citations.append({
                 "chunk_id": c.chunk_id,
@@ -106,11 +129,9 @@ async def retrieve_chat_context(
                 "score": c.score,
                 "score_type": c.score_type,
                 "rank": c.rank,
-            })
-            result.chunks_data.append({
-                "content": c.content,
-                "source": c.metadata.get("source") or f"知识库-{c.document_title}",
-                "chunk_type": c.metadata.get("chunk_strategy", "paragraph"),
+                "context_group_id": c.context_group_id,
+                "context_source": c.context_source,
+                "parent_context_id": c.parent_context_id,
             })
     except Exception as e:
         logger.warning(f"[Timing] RAG检索失败: {e}")

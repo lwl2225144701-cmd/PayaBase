@@ -6,10 +6,18 @@ logger = logging.getLogger(__name__)
 
 
 def build_context_from_chunks(chunks_data: list[dict], limit: int = 5) -> str:
-    """Build a readable context string from retrieved chunks."""
+    """Build a readable context string from retrieved chunks.
+
+    Phase 4: 若 chunk 含 context_content(去重后的父块/相邻扩展上下文),
+    则按更大预算(6000/组)输出; 否则保持第三阶段每块 700 字符截断的旧行为。
+    """
     context_parts = []
-    for i, chunk in enumerate(chunks_data[:limit], 1):
-        content_text = chunk["content"][:700]
+    has_context = any("context_content" in c for c in chunks_data)
+    per_chunk = 6000 if has_context else 700
+    eff_limit = 20 if has_context else limit
+    for i, chunk in enumerate(chunks_data[:eff_limit], 1):
+        content_text = chunk.get("context_content") or chunk["content"]
+        content_text = content_text[:per_chunk]
         source = chunk.get("source", "未知来源")
         context_parts.append(f"【{i}】[{source}]\n{content_text}")
     return "\n\n".join(context_parts)

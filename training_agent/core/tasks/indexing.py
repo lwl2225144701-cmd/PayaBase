@@ -553,15 +553,19 @@ def batch_insert_chunks(
     document_id: str,
     chunks_data: list[dict],
     vectors: list[list[float]],
+    engine=None,
 ):
-    """Stage5: 批量入库（事务控制：chunks + 状态更新在同一事务）"""
+    """Stage5: 批量入库（事务控制：chunks + 状态更新在同一事务）
+
+    engine: 可选, 指定同步引擎(默认 get_sync_engine())。测试可传入独立测试库引擎。
+    """
     from datetime import datetime
 
     if len(chunks_data) != len(vectors):
         raise ValueError(f"向量数量不匹配: chunks={len(chunks_data)}, vectors={len(vectors)}")
 
     try:
-        with get_sync_engine().begin() as conn:
+        with (engine or get_sync_engine()).begin() as conn:
             # 词法索引: 查文档标题/kb(同一事务内)
             _doc_row = conn.execute(
                 text("SELECT knowledge_base_id, title FROM documents WHERE id=:id"),
@@ -571,13 +575,52 @@ def batch_insert_chunks(
             _doc_title = _doc_row["title"] if _doc_row else ""
             _lexical_chunks: list = []
 
-            # 0. 先删除该文档的旧 chunk（重索引时必须清理，否则新旧向量并存导致检索混乱）
+            # 0. 先删除该文档的旧 chunk 与旧父上下文块(重索引时必须清理,
+            # 否则新旧向量/父块并存导致检索混乱)
+            from core.rag.context_blocks import build_context_blocks_for_document
+
+            conn.execute(
+                text("DELETE FROM chunk_context_blocks WHERE document_id=:doc_id"),
+                {"doc_id": document_id},
+            )
             conn.execute(
                 text("DELETE FROM chunks WHERE document_id=:doc_id"),
                 {"doc_id": document_id},
             )
 
-            # 1. 批量插入 chunks
+            # 0.5 生成父上下文块: 按切片顺序分配 sequence_no, 合并连续子块为父块。
+            # 原地写入每个 chunk 的 sequence_no 与 context_block_id。
+            chunks_data, context_blocks = build_context_blocks_for_document(
+                document_id, chunks_data
+            )
+
+            # 1.6 先插入父上下文块(同一事务: 步骤0已删旧, 此处写新)。
+            # 必须在 chunks 之前插入, 否则 chunks.context_block_id 违反外键约束
+            # (chunks_context_block_id_fkey 要求被引用行先存在)。
+            for block in context_blocks:
+                conn.execute(
+                    text(
+                        """
+                        INSERT INTO chunk_context_blocks
+                        (id, document_id, content, start_sequence, end_sequence,
+                         token_count, content_hash, context_version)
+                        VALUES (:id, :doc_id, :content, :start_sequence, :end_sequence,
+                                :token_count, :content_hash, :context_version)
+                        """
+                    ),
+                    {
+                        "id": uuid.UUID(block["id"]),
+                        "doc_id": document_id,
+                        "content": block["content"],
+                        "start_sequence": block["start_sequence"],
+                        "end_sequence": block["end_sequence"],
+                        "token_count": block["token_count"],
+                        "content_hash": block["content_hash"],
+                        "context_version": block["context_version"],
+                    },
+                )
+
+            # 1. 批量插入 chunks(此时 context_block_id 对应的父块已存在)
             for chunk_data, vector in zip(chunks_data, vectors):
                 chunk_id = chunk_data.get("chunk_id") or str(uuid.uuid4())
                 _lexical_chunks.append(
@@ -586,8 +629,8 @@ def batch_insert_chunks(
 
                 conn.execute(
                     text("""
-                        INSERT INTO chunks (id, document_id, content, summary, hypothetical_questions, chunk_type, vector, meta, token_count)
-                        VALUES (:id, :doc_id, :content, :summary, :hyde, :chunk_type, :vector, :meta, :token_count)
+                        INSERT INTO chunks (id, document_id, content, summary, hypothetical_questions, chunk_type, vector, meta, token_count, sequence_no, context_block_id)
+                        VALUES (:id, :doc_id, :content, :summary, :hyde, :chunk_type, :vector, :meta, :token_count, :sequence_no, :context_block_id)
                     """),
                     {
                         "id": chunk_id,
@@ -599,6 +642,8 @@ def batch_insert_chunks(
                         "vector": vector,
                         "meta": json.dumps(chunk_data.get("meta", {})),
                         "token_count": chunk_data.get("token_count", 0),
+                        "sequence_no": chunk_data.get("sequence_no", 0),
+                        "context_block_id": chunk_data.get("context_block_id"),
                     }
                 )
 
