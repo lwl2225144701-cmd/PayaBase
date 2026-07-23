@@ -110,6 +110,33 @@ class Settings(BaseSettings):
     # PDF Generation
     pdf_minio_bucket: str = "pdf-files"
 
+    # Agent 请求路由关键词（注入领域层 RequestRoutingService，支持配置化/热更新）
+    # 否定词：命中后整体抑制「生成类」路由（如「不要生成 PDF」不应路由到 pdf_generation）
+    route_pdf_keywords: tuple[str, ...] = (
+        "pdf", "PDF", "导出pdf", "导出 PDF", "生成pdf", "生成 PDF",
+        "输出pdf", "输出 PDF", "下载pdf", "下载 PDF",
+    )
+    route_ppt_keywords: tuple[str, ...] = (
+        "ppt", "PPT", "课件", "演示文稿", "汇报页", "幻灯片",
+    )
+    route_summary_keywords: tuple[str, ...] = (
+        "总结", "概括", "摘要", "提炼", "梳理", "归纳", "总结一下", "概述",
+    )
+    route_generation_keywords: tuple[str, ...] = (
+        "生成", "起草", "撰写", "写一份", "帮我写", "输出一份", "拟一份", "草案", "方案",
+    )
+    route_rag_hint_keywords: tuple[str, ...] = (
+        "什么是", "如何", "怎么", "流程", "制度", "规范", "文档", "资料",
+        "知识库", "附件", "在哪", "谁", "多久", "要求", "规则", "说明",
+    )
+    route_fallback_keywords: tuple[str, ...] = (
+        "你好", "hi", "hello", "早上好", "晚上好", "谢谢", "thank", "在吗",
+    )
+    route_negation_keywords: tuple[str, ...] = (
+        "不要生成", "不需要生成", "不要输出", "别生成", "不要做PPT",
+        "不要做pdf", "无需生成", "不需要PDF", "不需要PPT",
+    )
+
     # Indexing
     index_md_chunk_size: int = 800
     index_image_chunk_size: int = 500

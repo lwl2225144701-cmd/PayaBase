@@ -1,7 +1,18 @@
-"""Policy guardrails for autonomous agent runs."""
+"""Policy guardrails for autonomous agent runs (应用层)。
 
-from dataclasses import dataclass
+错误分类逻辑已下沉到 `core/domain/agent/policy.py`（单一事实来源）：
+本类保留运行期配置（max_steps / max_retries / allowed_routes）与
+重试退避策略，并把 classify / is_retryable / fallback_message 委托给领域服务。
+"""
+
 import random
+from dataclasses import dataclass
+
+from core.domain.agent.policy import (
+    classify_error,
+    fallback_message_for,
+    is_retryable_error,
+)
 
 
 @dataclass
@@ -22,54 +33,18 @@ class AgentPolicy:
     def route_allowed(self, route: str) -> bool:
         return route in self.allowed_routes
 
+    # —— 以下三个方法委托给领域层（单一关键词表，避免漂移）——
     def is_retryable_error(self, error: str) -> bool:
-        msg = (error or "").lower()
-        non_retryable_keywords = (
-            "validation",
-            "invalid",
-            "permission",
-            "forbidden",
-            "unauthorized",
-            "not found",
-            "401",
-            "403",
-            "404",
-        )
-        return not any(k in msg for k in non_retryable_keywords)
+        return is_retryable_error(error)
+
+    def classify_error(self, error: str) -> str:
+        return classify_error(error)
+
+    def fallback_message_for(self, error_type: str) -> str:
+        return fallback_message_for(error_type)
 
     def retry_backoff_seconds(self, attempt: int) -> float:
         # attempt starts from 1
         exp = self.retry_base_delay_sec * (2 ** max(0, attempt - 1))
         jitter = random.uniform(0, 0.25)
         return min(self.retry_max_delay_sec, exp + jitter)
-
-    def classify_error(self, error: str) -> str:
-        msg = (error or "").lower()
-        if any(k in msg for k in ("timeout", "timed out")):
-            return "timeout"
-        if any(k in msg for k in ("rate limit", "too many requests", "429")):
-            return "rate_limit"
-        if any(k in msg for k in ("401", "unauthorized", "api key", "auth")):
-            return "auth"
-        if any(k in msg for k in ("403", "forbidden", "permission")):
-            return "permission"
-        if any(k in msg for k in ("400", "validation", "invalid")):
-            return "validation"
-        if any(k in msg for k in ("404", "not found")):
-            return "not_found"
-        if any(k in msg for k in ("500", "502", "503", "504", "service unavailable", "connection")):
-            return "upstream"
-        return "unknown"
-
-    def fallback_message_for(self, error_type: str) -> str:
-        mapping = {
-            "timeout": "抱歉，当前处理超时，请稍后重试。",
-            "rate_limit": "抱歉，请求较多，请稍后再试。",
-            "auth": "抱歉，模型服务认证失败，请联系管理员检查配置。",
-            "permission": "抱歉，当前请求权限不足，无法完成。",
-            "validation": "抱歉，请求参数不完整或格式不正确，请调整后重试。",
-            "not_found": "抱歉，未找到所需资源，请检查后重试。",
-            "upstream": "抱歉，模型服务暂时不可用，请稍后重试。",
-            "unknown": "抱歉，处理失败，请稍后重试。",
-        }
-        return mapping.get(error_type, mapping["unknown"])

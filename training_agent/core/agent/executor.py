@@ -5,11 +5,11 @@ Multi-tool ReAct reasoning executor using ToolRegistry.
 
 import json
 import logging
-from typing import AsyncGenerator
+from collections.abc import AsyncGenerator
 
 from core.llm.client import LLMClient
-from core.tools.registry import ToolRegistry
 from core.prompts.agent import SOLUTION_AGENT_PROMPT
+from core.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -261,14 +261,33 @@ class AgentStepExecutor:
 
     @classmethod
     def _sanitize_messages_for_followup_tool_round(cls, messages: list[dict]) -> list[dict]:
-        """Prepare messages for providers that reject native tool-role history.
+        """Prepare messages for the next tool-decision round.
 
-        Keep system/user messages intact and flatten assistant/tool protocol
-        messages into plain assistant text so the next tool-decision round can
-        continue without sending `role=tool` back to an OpenAI-compatible
-        provider that only partially supports the schema.
+        与最终流式输出不同，这里**保留**工具调用结构（assistant 的 tool_calls
+        与 tool 的 tool_call_id），使多轮工具推理能延续结构化上下文。仅对
+        明显损坏的条目做规范化。最终流式输出才走 `_sanitize_messages_for_final_stream`
+        完全降级（修复 #4：原实现两方法完全相同，followup 也丢失了结构）。
         """
-        return cls._sanitize_messages_for_final_stream(messages)
+        sanitized: list[dict] = []
+        for msg in messages:
+            role = msg.get("role")
+            if role == "tool":
+                sanitized.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": msg.get("tool_call_id"),
+                        "content": msg.get("content") or "",
+                    }
+                )
+            elif role == "assistant":
+                entry: dict = {"role": "assistant", "content": msg.get("content") or ""}
+                tool_calls = msg.get("tool_calls")
+                if tool_calls:
+                    entry["tool_calls"] = tool_calls
+                sanitized.append(entry)
+            else:
+                sanitized.append(msg)
+        return sanitized
 
 
 # Backward compatibility: keep old import path working during migration.

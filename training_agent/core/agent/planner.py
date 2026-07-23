@@ -1,14 +1,23 @@
-"""Simple planner that reuses RequestRouter as internal decision capability."""
+"""Simple planner that reuses RequestRouter as internal decision capability (应用层门面).
+
+多步计划逻辑下沉到 `core/domain/agent/planner.py`：根据 route 生成真正的
+多步计划，步骤数受 max_steps 预算约束。本类保留与编排层的契约
+（`build_initial_plan` / `build_followup_step` 签名不变）。
+"""
 
 from __future__ import annotations
 
+from dataclasses import asdict
+
 from core.agent.request_router import RequestRouter
 from core.agent.state import AgentRunState, AgentStepState
+from core.domain.agent.planner import build_initial_steps, decide_followup
 
 
 class AgentPlanner:
-    def __init__(self, router: RequestRouter):
+    def __init__(self, router: RequestRouter, max_steps: int = 5):
         self.router = router
+        self.max_steps = max_steps
 
     async def build_initial_plan(
         self,
@@ -22,21 +31,16 @@ class AgentPlanner:
             has_attachments=has_attachments,
             has_active_kb=has_active_kb,
         )
-        steps = self._build_steps(route_decision.route)
+        steps = build_initial_steps(
+            route_decision.route,
+            has_attachments=has_attachments,
+            has_active_kb=has_active_kb,
+            max_steps=self.max_steps,
+        )
         return {
             "route_decision": route_decision,
-            "steps": steps,
+            "steps": [asdict(s) for s in steps],
         }
-
-    @staticmethod
-    def _build_steps(route: str) -> list[dict]:
-        return [
-            {
-                "step_id": "step-1",
-                "step_type": route,
-                "step_goal": f"execute_{route}",
-            },
-        ]
 
     @staticmethod
     def build_followup_step(
@@ -45,21 +49,8 @@ class AgentPlanner:
         *,
         max_retries: int,
     ) -> dict | None:
-        if step_state.status == "failed":
-            if run_state.retry_count < max_retries:
-                run_state.retry_count += 1
-                return {
-                    "step_id": f"retry-{run_state.retry_count}",
-                    "step_type": "retry_decision",
-                    "step_goal": "decide_retry_or_fallback",
-                }
-            return {
-                "step_id": "fallback-1",
-                "step_type": "fallback_finalize",
-                "step_goal": "fallback_and_finalize_response",
-            }
-        return {
-            "step_id": "finalize-1",
-            "step_type": "finalize_response",
-            "step_goal": "finalize_and_record_agent_result",
-        }
+        decision = decide_followup(step_state.status, run_state.retry_count, max_retries)
+        # 返回重试步骤时递增 retry_count（与领域决策使用的计数保持先后一致）
+        if decision and decision["step_type"] == "retry_decision":
+            run_state.retry_count += 1
+        return decision

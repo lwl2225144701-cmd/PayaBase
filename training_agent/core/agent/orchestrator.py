@@ -13,7 +13,7 @@ class AgentOrchestrator:
     def __init__(self, router: RequestRouter, policy: AgentPolicy | None = None):
         self.router = router
         self.policy = policy or AgentPolicy()
-        self.planner = AgentPlanner(router)
+        self.planner = AgentPlanner(router, max_steps=self.policy.max_steps)
         self.runner = AgentRunner()
 
     async def start_run(
